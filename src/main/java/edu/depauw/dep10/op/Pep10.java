@@ -1102,19 +1102,6 @@ public class Pep10 {
             s.setC(false);
         }
     };
-
-    public static final OpCore PUSH = new OpCore("PUSH", Modes.All) {
-        public void exec(State s, Mode mode) {
-            var a = s.getA().value();
-            var sp = s.mem2(SYSTEM_STACK_POINTER);
-            s.setSP(sp.plus(-4));
-
-            s.setN(false);
-            s.setZ(a == 0);
-            s.setV(false);
-            s.setC(false);
-        }
-    };
     
     static {
         table.install(1, RET);
