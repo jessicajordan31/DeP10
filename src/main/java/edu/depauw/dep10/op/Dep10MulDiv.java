@@ -152,6 +152,19 @@ public class Dep10MulDiv {
         }
     };
 
+    public static final OpCore DMUL = new OpCore("DMUL", Modes.All){
+        public void exec(State s, Mode mode){
+            Word sp = s.getSP();
+            Word aHigh = s.mem2(sp);
+            Word aLow  = s.mem2(sp.plus(2));
+            Word bHigh = s.mem2(sp.plus(4));
+            Word bLow  = s.mem2(sp.plus(6));
+
+            s.setV(false);
+            s.setC(false);
+        }
+    };
+
     public static final OpCore DIVA = new OpCore("DIVA", Modes.All) {
         public void exec(State s, Mode mode) {
             var operand = mode.resolveWord(s);
