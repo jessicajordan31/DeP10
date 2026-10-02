@@ -4,7 +4,7 @@
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>edu.depauw.dep10</groupId>
 	<artifactId>dep10</artifactId>
-	<version>0.8.2</version>
+	<version>0.9.3</version>
 	<properties>
 		<main.class>edu.depauw.dep10.driver.Driver</main.class>
 	</properties>
@@ -17,6 +17,12 @@
 					<release>21</release>
 				</configuration>
 			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<version>3.2.5</version>
+			</plugin>
+
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-assembly-plugin</artifactId>
@@ -78,5 +84,13 @@
 			<artifactId>flatlaf</artifactId>
 			<version>3.7.1</version>
 		</dependency>
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<version>5.10.2</version>
+			<scope>test</scope>
+		</dependency>
+
 	</dependencies>
 </project>
+
