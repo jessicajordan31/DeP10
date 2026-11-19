@@ -14,6 +14,7 @@ import java.util.stream.Collectors;
 import javax.swing.AbstractAction;
 import javax.swing.Action;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JEditorPane;
 import javax.swing.JFrame;
@@ -37,12 +38,14 @@ import com.formdev.flatlaf.util.SystemInfo;
 
 import edu.depauw.dep10.simulator.Controller;
 
-@SuppressWarnings("serial")
 public class MainFrame extends JFrame {
+    private static final long serialVersionUID = 7189716789380272250L;
+
     static final String APP_TITLE = "DeP10 IDE";
 
     SourcePanel source;
-    OutputPanel listing;
+//    OutputPanel listing;
+    OutputPanel symbols;
     OutputPanel object;
     TerminalPanel terminal;
     InputPanel batch;
@@ -55,6 +58,13 @@ public class MainFrame extends JFrame {
     private JComboBox<SourceType> sourceType;
     private JTabbedPane tabs;
 
+    private volatile boolean fancy = false;
+
+    /** True when the toolbar's "Fancy machine" box is ticked; applies to the next run or debug. */
+    public boolean isFancy() {
+        return fancy;
+    }
+
     public MainFrame() {
         setSize(800, 600);
         setTitle(APP_TITLE);
@@ -64,8 +74,11 @@ public class MainFrame extends JFrame {
 
         tabs = new JTabbedPane(JTabbedPane.TOP);
 
-        listing = new OutputPanel("listing");
-        tabs.add(listing.getTitle(), listing);
+//        listing = new OutputPanel("listing");
+//        tabs.add(listing.getTitle(), listing);
+        
+        symbols = new OutputPanel("symbols");
+        tabs.add(symbols.getTitle(), symbols);
 
         object = new OutputPanel("object");
         tabs.add(object.getTitle(), object);
@@ -100,6 +113,7 @@ public class MainFrame extends JFrame {
         };
         sourceType = new JComboBox<>(sourceTypes);
         sourceType.setMaximumSize(sourceType.getPreferredSize());
+        sourceType.addActionListener(source.getSourceTypeListener());
         tools.add(sourceType);
         tools.add(new JToolBar.Separator());
 
@@ -111,7 +125,8 @@ public class MainFrame extends JFrame {
         pack();
         setLocationRelativeTo(null);
         vsplit.setDividerLocation(0.5);
-        hsplit.setDividerLocation(0.5);
+        hsplit.setResizeWeight(1.0);
+        hsplit.setDividerLocation(0.6);
     }
 
     public JMenuBar createMenuBar(JToolBar tools) {
@@ -158,7 +173,7 @@ public class MainFrame extends JFrame {
         // Simulator Menu
         var simulatorMenu = new JMenu("Simulator");
 
-        var build = source.getBuildAction(listing, object);
+        var build = source.getBuildAction(symbols, object);
         simulatorMenu.add(createMenuItem(build));
         tools.add(new JButton(build));
 
@@ -181,6 +196,13 @@ public class MainFrame extends JFrame {
         back.setEnabled(false);
         simulatorMenu.add(createMenuItem(back));
         tools.add(new JButton(back));
+
+        tools.add(new JToolBar.Separator());
+        var fancyBox = new JCheckBox("Fancy machine");
+        fancyBox.setToolTipText("Supervisor/user modes, timer at 0xFFF5 and invalid-instruction trap; leave off for programs written for the plain machine. Applies to the next run or debug.");
+        fancyBox.setFocusable(false);
+        fancyBox.addActionListener(e -> fancy = fancyBox.isSelected());
+        tools.add(fancyBox);
 
         menuBar.add(simulatorMenu);
 
@@ -244,6 +266,7 @@ public class MainFrame extends JFrame {
                 for (var tab : tabs.getComponents()) {
                     ((TabPanel) tab).setPanelFont(source.getPanelFont());
                 }
+                statePanel.setPanelFont(source.getPanelFont());
                 SwingUtilities.updateComponentTreeUI(MainFrame.this);
             }
         };
@@ -262,6 +285,7 @@ public class MainFrame extends JFrame {
                 for (var tab : tabs.getComponents()) {
                     ((TabPanel) tab).setPanelFont(source.getPanelFont());
                 }
+                statePanel.setPanelFont(source.getPanelFont());
                 SwingUtilities.updateComponentTreeUI(MainFrame.this);
             }
         };
@@ -297,8 +321,12 @@ public class MainFrame extends JFrame {
         return item;
     }
 
-    public void selectListingTab() {
-        tabs.setSelectedComponent(listing);
+//    public void selectListingTab() {
+//        tabs.setSelectedComponent(listing);
+//    }
+
+    public void selectSymbolsTab() {
+        tabs.setSelectedComponent(symbols);
     }
 
     public void selectTerminalTab() {

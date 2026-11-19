@@ -4,6 +4,9 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+import org.fife.ui.rsyntaxtextarea.TextEditorPane;
 
 import edu.depauw.declan.Reporter;
 import edu.depauw.dep10.assemble.Assembler;
@@ -20,12 +23,11 @@ import edu.depauw.dep10.simulator.Simulator;
 import edu.depauw.dep10.simulator.SingleStepController;
 import edu.depauw.dep10.simulator.State;
 import edu.depauw.dep10.simulator.TracingController;
-import edu.depauw.dep10.util.Word;
 
 public interface SourceType {
     int DEFAULT_STEP_LIMIT = 100000000; // TODO make this a setting
 
-    default boolean build(String source, OutputPanel listing, OutputPanel object) {
+    default Result build(String source, OutputPanel symbols, OutputPanel object, TextEditorPane resTextArea) {
         var log = new ErrorLog();
         Sources sources = new Sources();
 
@@ -39,14 +41,15 @@ public interface SourceType {
         if (log.noErrors()) {
             var lines = preprocessor.preprocess(sources);
             var assembler = new Assembler(log);
-            result = assembler.assemble(lines);
+            result = assembler.assemble(lines); // TODO include map from line numbers to addresses (what about DeCLan?)
 
-            listing.setDocument(result.getListingDocument());
+            symbols.setContent(result.getSymbols());
             object.setContent(result.toObjectFile());
+            resTextArea.setText(result.getResultText());
 
-            return !result.hasErrors();
+            return result;
         } else {
-            return false;
+            return Result.errors(log);
         }
 
         // TODO deal with errors; don't run on UI thread!
@@ -60,6 +63,7 @@ public interface SourceType {
         var sp = frame.statePanel;
 
         State state = new State();
+        state.setFancy(frame.isFancy());
         state.loadString(object.getContent());
         loadOSObject(state);
 
@@ -90,7 +94,7 @@ public interface SourceType {
     }
 
     // TODO avoid duplication from run()
-    default void debug(MainFrame frame) {
+    default void debug(MainFrame frame, List<Integer> breakpoints) {
         var source = frame.source;
         var object = frame.object;
         var terminal = frame.terminal;
@@ -99,6 +103,7 @@ public interface SourceType {
         var sp = frame.statePanel;
 
         State state = new DebugState();
+        state.setFancy(frame.isFancy());
         state.loadString(object.getContent());
         loadOSObject(state);
 
@@ -114,9 +119,13 @@ public interface SourceType {
         Simulator sim = new Simulator(state);
         sp.attach(state);
 
-        // initially just run to PC == 0
+        // if breakpoints are empty, stop initially at PC == 0
+        if (breakpoints.isEmpty()) {
+            breakpoints.add(0);
+        }
+        
         TracingController control = new TracingController(
-                new BreakpointController(new PlainController(), s -> s.getPC().equals(Word.of(0))));
+                new BreakpointController(new PlainController(), s -> breakpoints.contains(s.getPC().value())));
         frame.setController(control);
 
         var t = new Thread(() -> {
@@ -124,6 +133,7 @@ public interface SourceType {
             // leave controller in place for single-step or resume
 
             source.setPaused();
+            source.showLine(state.getPC().value());
 
             sp.refresh();
 
@@ -136,7 +146,7 @@ public interface SourceType {
         t.start();
     }
 
-    default void resume(MainFrame frame, State state) {
+    default void resume(MainFrame frame, State state, List<Integer> breakpoints) {
         var source = frame.source;
         var sp = frame.statePanel;
         var trace = frame.tracePanel;
@@ -144,7 +154,9 @@ public interface SourceType {
         Simulator sim = new Simulator(state, false);
         state.resume();
 
-        TracingController control = new TracingController(new PlainController(), frame.getController());
+        TracingController control = new TracingController(
+                new BreakpointController(new PlainController(), s -> breakpoints.contains(s.getPC().value())),
+                frame.getController());
         frame.setController(control);
 
         var t = new Thread(() -> {
@@ -152,6 +164,7 @@ public interface SourceType {
             // leave controller in place for single-step or resume
 
             source.setPaused();
+            source.showLine(state.getPC().value());
 
             sp.refresh();
 
@@ -181,6 +194,7 @@ public interface SourceType {
             // leave controller in place for single-step or resume
 
             source.setPaused();
+            source.showLine(state.getPC().value());
 
             sp.refresh();
 
@@ -202,6 +216,7 @@ public interface SourceType {
         if (control instanceof TracingController tc) {
             tc.goBackward(state);
             source.setPaused();
+            source.showLine(state.getPC().value());
 
             sp.refresh();
 
@@ -275,7 +290,7 @@ public interface SourceType {
         }
 
         @Override
-        public boolean build(String source, OutputPanel listing, OutputPanel object) {
+        public Result build(String source, OutputPanel listing, OutputPanel object, TextEditorPane resTextArea) {
             var err = new ByteArrayOutputStream();
             var reporter = new Reporter(new PrintStream(err, true));
 
@@ -284,7 +299,7 @@ public interface SourceType {
                 pepSource = err.toString(); // this is a cheat...
             }
 
-            return SourceType.super.build(pepSource, listing, object);
+            return SourceType.super.build(pepSource, listing, object, resTextArea);
         }
 
         @Override

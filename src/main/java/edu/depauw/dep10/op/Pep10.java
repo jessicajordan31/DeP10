@@ -7,6 +7,18 @@ public class Pep10 {
     public static final Word TRAP_HANDLER_POINTER = Word.of(0xFFF7);
     public static final Word DISPATCHER_POINTER = Word.of(0xFFF9);
     public static final Word SYSTEM_STACK_POINTER = Word.of(0xFFFB);
+    /**
+     * Timer device (fancy machine): instructions left before a timer trap (counts
+     * in every mode; the trap waits for user mode); 0 = off.
+     */
+    public static final Word TIMER = Word.of(0xFFF5);
+    /**
+     * Memory protection (fancy machine): address of the 64-byte page table, 0 =
+     * protection off.
+     */
+    public static final Word MMU_BASE = Word.of(0xFFF3);
+    /** Memory protection: the address that caused the last protection trap. */
+    public static final Word FAULT_ADDRESS = Word.of(0xFFF1);
     public static final Word CHARIN = Word.of(0xFFFD);
     public static final Word CHAROUT = Word.of(0xFFFE);
     public static final Word SHUTDOWN = Word.of(0xFFFF);
@@ -22,13 +34,20 @@ public class Pep10 {
 
     public static final Operation SRET = new Operation.Unary("SRET") {
         public void exec(State s) {
+            if (s.isFancy() && !s.getP()) {
+                // Privileged: a user program cannot return from a trap it did not make. Treated
+                // like an invalid instruction (trap with this opcode and operand 2).
+                s.invalidInstruction();
+                return;
+            }
             var t = s.getSP();
-            s.setFlags(s.mem1(t));
+            var saved = s.mem1(t);
             s.setA(s.mem2(t.plus(1)));
             s.setX(s.mem2(t.plus(3)));
             s.setPC(s.mem2(t.plus(5)));
             s.setSP(s.mem2(t.plus(7)));
             s.setMem2(SYSTEM_STACK_POINTER, t.plus(12));
+            s.setFlags(saved); // last, so everything above is read and written in the OS's mode
         }
     };
 
@@ -40,7 +59,8 @@ public class Pep10 {
 
     public static final Operation MOVAFLG = new Operation.Unary("MOVAFLG") {
         public void exec(State s) {
-            s.setFlags(s.getA().lo());
+            // Don't allow changing the Protected bit
+            s.setFlags(s.getA().lo().withBit(7, s.getP()));
         }
     };
 
@@ -337,18 +357,7 @@ public class Pep10 {
 
     public static final OpCore SCALL = new OpCore("SCALL", Modes.All) {
         public void exec(State s, Mode mode) {
-            var t = s.mem2(SYSTEM_STACK_POINTER);
-
-            s.setMem2(t.plus(-2), s.getOperand()); // don't resolve yet; the handler will do that
-            s.setMem1(t.plus(-3), s.getOpCode());
-            s.setMem2(t.plus(-5), s.getSP());
-            s.setMem2(t.plus(-7), s.getPC());
-            s.setMem2(t.plus(-9), s.getX());
-            s.setMem2(t.plus(-11), s.getA());
-            s.setMem1(t.plus(-12), s.getFlags());
-
-            s.setSP(t.plus(-12));
-            s.setPC(s.mem2(TRAP_HANDLER_POINTER));
+            s.trap(s.getOpCode(), s.getOperand()); // don't resolve the operand yet; the handler will do that
         }
     };
 
@@ -431,12 +440,12 @@ public class Pep10 {
             var sign1 = a1.isNegative();
 
             var op = operand.negate();
-            var signo = op.isNegative();
+            var signo = operand.isNegative(); // sign of the operand itself, not of its negation
 
             var a2 = a1.plus(op);
             var sign2 = a2.isNegative();
             var zero2 = a2.isZero();
-            var overflow = (sign1 == signo) && (sign1 != sign2);
+            var overflow = (sign1 != signo) && (sign1 != sign2);
             var carry = !a1.lessThan(operand); // true if a1 >= operand, so no borrow
 
             s.setN(sign2 ^ overflow);
@@ -454,12 +463,12 @@ public class Pep10 {
             var sign1 = x1.isNegative();
 
             var op = operand.negate();
-            var signo = op.isNegative();
+            var signo = operand.isNegative(); // sign of the operand itself, not of its negation
 
             var x2 = x1.plus(op);
             var sign2 = x2.isNegative();
             var zero2 = x2.isZero();
-            var overflow = (sign1 == signo) && (sign1 != sign2);
+            var overflow = (sign1 != signo) && (sign1 != sign2);
             var carry = !x1.lessThan(operand); // true if x1 >= operand, so no borrow
 
             s.setN(sign2 ^ overflow);
@@ -557,12 +566,12 @@ public class Pep10 {
             var sign1 = a1.isNegative();
 
             var op = operand.negate();
-            var signo = op.isNegative();
+            var signo = operand.isNegative(); // sign of the operand itself, not of its negation
 
             var a2 = a1.plus(op);
             var sign2 = a2.isNegative();
             var zero2 = a2.isZero();
-            var overflow = (sign1 == signo) && (sign1 != sign2);
+            var overflow = (sign1 != signo) && (sign1 != sign2);
             var carry = !a1.lessThan(operand); // true if a1 >= operand, so no borrow
 
             s.setA(a2);
@@ -581,12 +590,12 @@ public class Pep10 {
             var sign1 = x1.isNegative();
 
             var op = operand.negate();
-            var signo = op.isNegative();
+            var signo = operand.isNegative(); // sign of the operand itself, not of its negation
 
             var x2 = x1.plus(op);
             var sign2 = x2.isNegative();
             var zero2 = x2.isZero();
-            var overflow = (sign1 == signo) && (sign1 != sign2);
+            var overflow = (sign1 != signo) && (sign1 != sign2);
             var carry = !x1.lessThan(operand); // true if x1 >= operand, so no borrow
 
             s.setX(x2);
@@ -1154,8 +1163,8 @@ public class Pep10 {
         table.install(6, MOVASP);
         table.install(7, NOP);
 
-        table.install(8, Dep10MulDiv.table);
-        table.install(9, Dep10PushPop.table);
+        table.install(8, Dep10Arith.table);
+        table.install(9, Dep10Util.table);
 
         table.install(24, NEGA);
         table.install(25, NEGX);

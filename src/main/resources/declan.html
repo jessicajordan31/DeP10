@@ -1,8 +1,9 @@
 <html><body>
 <h1>DeCLan</h1>
 <p>This is the grammar for the DePauw Compilers Language (DeCLan).
-It is based on the <a href="https://oberon.org/en">Oberon</a> programming language, with no modules, arrays,
-records, pointers, case statements, sets, type declarations, function procedures, or procedure variables.</p>
+It is based on the <a href="https://oberon.org/en">Oberon</a> programming language, with no modules,
+records, pointers, case statements, sets, function procedures, or procedure variables. Arrays of arrays are allowed,
+but an array cannot be assigned or passed as a whole.</p>
 <h2>Lexical Rules</h2>
 <pre><code>letter -&gt; [A-Za-z]
 digit -&gt; [0-9]
@@ -17,18 +18,20 @@ scaleFactor -&gt; E (+ | -)? digit digit*
 
 number -&gt; integer | real
 </code></pre>
+<p>The type of an integer literal is the minimal type to which the number belongs: <code>INTEGER</code> if it is at most 32767,
+otherwise <code>LONGINT</code> (at most 2147483647). There is no separate syntax for <code>LONGINT</code> literals.</p>
 <p>Whitespace between tokens may be zero or more spaces, tabs, newlines, carriage returns, or comments.
 A comment is any sequence of characters, other than <code>*)</code>, surrounded by a leading <code>(*</code> and a trailing <code>*)</code>.
 The body of a comment may contain another comment, which must be properly closed (and which itself may
 contain further nested comments).</p>
 <h3>Reserved Words</h3>
-<pre><code>BEGIN, BOOLEAN, BY, CONST, DIV, DO, ELSE, ELSIF, END, FALSE, FOR,
-IF, INTEGER, MOD, OR, PROCEDURE, REAL, REPEAT, THEN, TO, TRUE, UNTIL, VAR, WHILE
+<pre><code>ARRAY, BEGIN, BOOLEAN, BY, CONST, DIV, DO, ELSE, ELSIF, END, FALSE, FOR,
+IF, INTEGER, LONGINT, MOD, OF, OR, PROCEDURE, REAL, REPEAT, THEN, TO, TRUE, TYPE, UNTIL, VAR, WHILE
 </code></pre>
 <h2>Syntax Rules</h2>
 <pre><code>Program -&gt; DeclSequence ProcedureDeclSequence BEGIN StatementSequence END .
 
-DeclSequence -&gt; Constants Variables
+DeclSequence -&gt; Constants Types Variables
 
 Constants -&gt; CONST ConstDecl ; ConstDeclSequence
 Constants -&gt;
@@ -39,6 +42,14 @@ ConstDeclSequence -&gt;
 ConstDecl -&gt; ident = ConstExpr
 
 ConstExpr -&gt; Expression  // may only use idents defined in previous ConstDecls
+
+Types -&gt; TYPE TypeDecl ; TypeDeclSequence
+Types -&gt;
+
+TypeDeclSequence -&gt; TypeDecl ; TypeDeclSequence
+TypeDeclSequence -&gt;
+
+TypeDecl -&gt; ident = Type
 
 Variables -&gt; VAR VariableDecl ; VariableDeclSequence
 Variables -&gt;
@@ -53,7 +64,11 @@ IdentList -&gt; ident IdentListRest
 IdentListRest -&gt; , ident IdentListRest
 IdentListRest -&gt;
 
-Type -&gt; BOOLEAN | INTEGER | REAL
+BasicType -&gt; BOOLEAN | INTEGER | LONGINT | REAL
+
+Type -&gt; BasicType
+Type -&gt; ident  // a type declared with TYPE
+Type -&gt; ARRAY ConstExpr OF Type  // the length must be a positive INTEGER constant
 
 ProcedureDeclSequence -&gt; ProcedureDecl ; ProcedureDeclSequence
 ProcedureDeclSequence -&gt;
@@ -70,8 +85,8 @@ FormalParameters -&gt; ( )
 FPSectionSequence -&gt; ; FPSection FPSectionSequence
 FPSectionSequence -&gt;
 
-FPSection -&gt; VAR IdentList : Type
-FPSection -&gt; IdentList : Type
+FPSection -&gt; VAR IdentList : BasicType
+FPSection -&gt; IdentList : BasicType
 
 StatementSequence -&gt; Statement StatementSequenceRest
 
@@ -81,7 +96,12 @@ StatementSequenceRest -&gt;
 Statement -&gt; Assignment | ProcedureCall | IfStatement | WhileStatement | RepeatStatement | ForStatement
 Statement -&gt;
 
-Assignment -&gt; ident := Expression
+Assignment -&gt; Designator := Expression
+
+Designator -&gt; ident Selectors
+
+Selectors -&gt; [ Expression ] Selectors
+Selectors -&gt;
 
 ProcedureCall -&gt; ident ActualParameters
 
@@ -130,8 +150,97 @@ TermRest -&gt;
 
 MulOperator -&gt; * | / | DIV | MOD | &amp;
 
-Factor -&gt; number | TRUE | FALSE | ident
+Factor -&gt; number | TRUE | FALSE | Designator
 Factor -&gt; ( Expression )
 Factor -&gt; ~ Factor
+</code></pre>
+<h2>Types and LONGINT</h2>
+<p>DeCLan has four types: <code>BOOLEAN</code>, <code>INTEGER</code>, <code>LONGINT</code> and <code>REAL</code>.</p>
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Type</th><th>Size</th><th>Range</th></tr>
+<tr><td><code>INTEGER</code></td><td>16 bits</td><td>-32768 to 32767</td></tr>
+<tr><td><code>LONGINT</code></td><td>32 bits</td><td>-2147483648 to 2147483647</td></tr>
+</table>
+<p>Both integer types use two's complement and wrap around silently on overflow, as <code>int</code> does in Java.</p>
+<p><b>Literals.</b> <code>32767</code> is an <code>INTEGER</code> and <code>32768</code> is a <code>LONGINT</code>. A literal larger than 2147483647 is an error.
+Constant expressions follow the same rule, so after <code>CONST big = 200 * 200;</code> the constant <code>big</code> (40000) is a <code>LONGINT</code>.</p>
+<p><b>Widening.</b> An <code>INTEGER</code> is converted to <code>LONGINT</code> automatically in assignments, in value parameters, and when it is mixed
+with a <code>LONGINT</code> in an expression. There is no automatic conversion the other way.</p>
+<p><b>Operations.</b> <code>LONGINT</code> supports <code>+</code>, <code>-</code> (binary and unary), <code>*</code>, <code>DIV</code>, <code>MOD</code>,
+and all six comparisons. <code>DIV</code> and <code>MOD</code> truncate toward zero, like their <code>INTEGER</code> versions.
+A <code>LONGINT</code> can be a global, a local, a value parameter or a <code>VAR</code> parameter.</p>
+<p><b>Watch out: widen before you multiply.</b> An expression whose operands are both <code>INTEGER</code> is computed in 16 bits,
+even if it is assigned to a <code>LONGINT</code>:</p>
+<pre><code>VAR i, j : INTEGER; a : LONGINT;
+BEGIN
+  i := 300; j := 300;
+  a := i * j;     (* 16-bit multiply, wraps: a = 24464 *)
+  a := i;
+  a := a * j      (* 32-bit multiply: a = 90000 *)
+END.
+</code></pre>
+<p>A <code>LONGINT</code> variable can be the counter of a <code>FOR</code> loop. Its start and stop values may be <code>INTEGER</code> or <code>LONGINT</code>,
+and the <code>BY</code> step may be an <code>INTEGER</code> or <code>LONGINT</code> constant. An <code>INTEGER</code> counter still needs <code>INTEGER</code> bounds and step.</p>
+<p><b>Not supported yet.</b> Mixing <code>LONGINT</code> with <code>REAL</code>, including assigning a <code>LONGINT</code> to a <code>REAL</code>.</p>
+<h3>Standard procedures for input and output</h3>
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Call</th><th>Does</th></tr>
+<tr><td><code>ReadInt(n)</code></td><td>reads a decimal <code>INTEGER</code> into the variable <code>n</code></td></tr>
+<tr><td><code>ReadLong(n)</code></td><td>reads a signed decimal number into the <code>LONGINT</code> variable <code>n</code>; skips blanks and line ends first, and wraps silently like other <code>LONGINT</code> arithmetic</td></tr>
+<tr><td><code>WriteInt(n)</code></td><td>a space, then the <code>INTEGER</code> <code>n</code></td></tr>
+<tr><td><code>WriteLong(n)</code></td><td>a space, then the signed decimal value of the <code>LONGINT</code> <code>n</code> (an <code>INTEGER</code> argument is widened)</td></tr>
+<tr><td><code>WriteLn()</code></td><td>a newline</td></tr>
+</table>
+<h3>Example</h3>
+<p>Factorials and a Fibonacci number that do not fit in 16 bits (also in <code>demo/longint-demo.dcl</code>):</p>
+<pre><code>VAR f, a, b, t : LONGINT; i : INTEGER;
+
+BEGIN
+  f := 1;
+  FOR i := 1 TO 12 DO
+    f := f * i;
+    WriteLong(i);
+    WriteLong(f);
+    WriteLn()
+  END;
+  a := 0;
+  b := 1;
+  FOR i := 1 TO 45 DO
+    t := a + b;
+    a := b;
+    b := t
+  END;
+  WriteLong(a);      (* Fibonacci(45) = 1134903170 *)
+  WriteLn()
+END.
+</code></pre>
+<p>The compiler implements <code>LONGINT</code> arithmetic with the library routines <code>DADD</code>, <code>DSUB</code>, <code>DMul</code> and <code>DDiv</code>,
+and printing with <code>DPRINTD</code>. A program that does not use <code>LONGINT</code> compiles to exactly the same code as before,
+and each library is included only when the program needs it.</p>
+<h2>Arrays and TYPE</h2>
+<p>A <code>TYPE</code> section, between <code>CONST</code> and <code>VAR</code>, gives names to types:</p>
+<pre><code>CONST n = 10;
+TYPE Vector = ARRAY n OF INTEGER;
+     Table = ARRAY 3 OF Vector;
+VAR v : Vector; t : Table; x : ARRAY 5 OF LONGINT;
+</code></pre>
+<p>An <code>ARRAY</code> type has a length, which is a constant expression with a positive <code>INTEGER</code> value, and an element type.
+The elements are numbered from 0 to length - 1, so <code>v[0]</code> is the first element of <code>v</code> and <code>v[n - 1]</code> is the last.
+Write <code>t[i][j]</code> for element <code>j</code> of element <code>i</code> of <code>t</code>.</p>
+<ul>
+<li>An index must be an <code>INTEGER</code>. If it is out of range when the program runs, the program prints <code>Array index out of range</code> and stops.</li>
+<li>The element type can be any type, including another array. A local array is allocated in the procedure's stack frame, so a very large array should be global.</li>
+<li>An array element can be used like a variable of the element type: assigned to, used in an expression, and passed to a <code>VAR</code> parameter, as in <code>ReadLong(x[i])</code>.</li>
+<li>An array as a whole cannot be assigned, compared, or passed to a procedure, and a procedure parameter cannot have an array type. Use a global array, or copy the elements one by one.</li>
+</ul>
+<pre><code>VAR a : ARRAY 5 OF INTEGER; i, sum : INTEGER;
+
+BEGIN
+  FOR i := 0 TO 4 DO a[i] := i * i END;
+  sum := 0;
+  FOR i := 0 TO 4 DO sum := sum + a[i] END;
+  WriteLong(sum);    (* 30 *)
+  WriteLn()
+END.
 </code></pre>
 </body></html>

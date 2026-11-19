@@ -12,12 +12,16 @@ import edu.depauw.declan.resolved.RExpr;
 import edu.depauw.declan.resolved.RProc;
 import edu.depauw.declan.resolved.RProg;
 import edu.depauw.declan.resolved.RStmt;
+import edu.depauw.declan.resolved.RExpr.ArrayBase;
 import edu.depauw.declan.resolved.RExpr.Binary;
+import edu.depauw.declan.resolved.RExpr.Element;
+import edu.depauw.declan.resolved.RExpr.ElementAddr;
 import edu.depauw.declan.resolved.RExpr.Literal;
 import edu.depauw.declan.resolved.RExpr.Unary;
 import edu.depauw.declan.resolved.RExpr.Variable;
 import edu.depauw.declan.resolved.RStmt.Assignment;
 import edu.depauw.declan.resolved.RStmt.Call;
+import edu.depauw.declan.resolved.RStmt.ElementAssignment;
 import edu.depauw.declan.resolved.RStmt.Empty;
 import edu.depauw.declan.resolved.RStmt.For;
 import edu.depauw.declan.resolved.RStmt.If;
@@ -59,6 +63,16 @@ public class Generator implements RExpr.Visitor<Void>, RStmt.Visitor<Void>, RPro
                 expr.left.accept(Generator.this);
                 expr.right.accept(Generator.this);
                 generateBranchILess(ifTrue, ifFalse);
+                break;
+            case LEQL:
+                expr.left.accept(Generator.this);
+                expr.right.accept(Generator.this);
+                instructions.add(Instruction.makeBranchEqual(Type.LONGINT, ifTrue, ifFalse));
+                break;
+            case LLT:
+                expr.left.accept(Generator.this);
+                expr.right.accept(Generator.this);
+                instructions.add(Instruction.makeBranchLess(Type.LONGINT, ifTrue, ifFalse));
                 break;
             case LAND: {
                 Label skip = newLabel();
@@ -118,6 +132,25 @@ public class Generator implements RExpr.Visitor<Void>, RStmt.Visitor<Void>, RPro
 
             return null;
         }
+
+        @Override
+        public Void visitElement(Element expr) {
+            expr.accept(Generator.this);
+            generateBranchTrue(ifTrue);
+            generateBranch(ifFalse);
+
+            return null;
+        }
+
+        @Override
+        public Void visitArrayBase(ArrayBase expr) {
+            return null;
+        }
+
+        @Override
+        public Void visitElementAddr(ElementAddr expr) {
+            return null;
+        }
     }
 
     public Generator() {
@@ -139,8 +172,23 @@ public class Generator implements RExpr.Visitor<Void>, RStmt.Visitor<Void>, RPro
 
         int i = 0;
         for (Object x : program.inits) {
-            generateLabel(new Label("_g" + i++));
-            generateConstant(TypeChecker.typeOf(x), x);
+            Type type = TypeChecker.typeOf(x);
+            if (type instanceof ArrayType) {
+                for (int k = 0; k < type.width(); k++) {
+                    generateLabel(new Label("_g" + i++));
+                    generateConstant(Type.INTEGER, 0);
+                }
+            } else if (type == Type.LONGINT) {
+                // Two words, high word first (at the lower address)
+                int value = (int) (long) x;
+                generateLabel(new Label("_g" + i++));
+                generateConstant(Type.INTEGER, (int) (short) (value >>> 16));
+                generateLabel(new Label("_g" + i++));
+                generateConstant(Type.INTEGER, (int) (short) value);
+            } else {
+                generateLabel(new Label("_g" + i++));
+                generateConstant(type, x);
+            }
         }
 
         for (RProc proc : program.procs) {
@@ -163,10 +211,18 @@ public class Generator implements RExpr.Visitor<Void>, RStmt.Visitor<Void>, RPro
     public Void visitProc(RProc proc) {
         generateLabel(new Label(proc.name));
 
-        int numLocals = proc.inits.size();
+        int numLocals = 0;
 
         for (Object x : proc.inits) {
-            generateLoadConstant(TypeChecker.typeOf(x), x);
+            Type type = TypeChecker.typeOf(x);
+            numLocals += type.width();
+            if (type instanceof ArrayType) {
+                for (int k = 0; k < type.width(); k++) {
+                    generateLoadConstant(Type.INTEGER, 0);
+                }
+            } else {
+                generateLoadConstant(type, x);
+            }
         }
 
         generateSetFP(proc.numSlots);
@@ -191,6 +247,15 @@ public class Generator implements RExpr.Visitor<Void>, RStmt.Visitor<Void>, RPro
     }
 
     @Override
+    public Void visitElementAssignment(ElementAssignment stmt) {
+        stmt.addr.accept(this);
+        stmt.right.accept(this);
+        instructions.add(Instruction.makeIndirectStore(stmt.type));
+
+        return null;
+    }
+
+    @Override
     public Void visitCall(Call stmt) {
         generateSaveFP();
 
@@ -199,7 +264,11 @@ public class Generator implements RExpr.Visitor<Void>, RStmt.Visitor<Void>, RPro
         }
 
         generateCall(stmt.name);
-        generateDrop(stmt.args.size());
+        int numWords = 0;
+        for (RExpr expr : stmt.args) {
+            numWords += wordsOf(expr);
+        }
+        generateDrop(numWords);
 
         generateRestoreFP();
 
@@ -214,6 +283,45 @@ public class Generator implements RExpr.Visitor<Void>, RStmt.Visitor<Void>, RPro
     @Override
     public Void visitFor(For stmt) {
         Location loc = stmt.loc;
+
+        if (stmt.type == Type.LONGINT) {
+            // A LONGINT occupies two words, which the single-word DUP and SWAP used below
+            // cannot handle, so keep the counter in its variable and reload it each time.
+            Label top = newLabel();
+            Label end = newLabel();
+
+            stmt.start.accept(this);
+            generateStore(Type.LONGINT, loc);
+
+            generateLabel(top);
+
+            if (stmt.step > 0) {
+                // leave the loop when stop < counter
+                stmt.stop.accept(this);
+                generateLoad(Type.LONGINT, loc);
+            } else {
+                // leave the loop when counter < stop
+                generateLoad(Type.LONGINT, loc);
+                stmt.stop.accept(this);
+            }
+            generateBinOp(Binary.OpCode.LLT);
+            generateBranchTrue(end);
+
+            for (RStmt s : stmt.body) {
+                s.accept(this);
+            }
+
+            generateLoad(Type.LONGINT, loc);
+            generateLoadConstant(Type.LONGINT, stmt.step);
+            generateBinOp(Binary.OpCode.LADD);
+            generateStore(Type.LONGINT, loc);
+
+            generateBranch(top);
+
+            generateLabel(end);
+
+            return null;
+        }
 
         stmt.start.accept(this);
         generateDup();
@@ -237,7 +345,7 @@ public class Generator implements RExpr.Visitor<Void>, RStmt.Visitor<Void>, RPro
         }
 
         generateLoad(Type.INTEGER, loc);
-        generateLoadConstant(Type.INTEGER, stmt.step);
+        generateLoadConstant(Type.INTEGER, (int) stmt.step);
         generateBinOp(Binary.OpCode.IADD);
         generateDup();
         generateStore(Type.INTEGER, loc);
@@ -332,6 +440,43 @@ public class Generator implements RExpr.Visitor<Void>, RStmt.Visitor<Void>, RPro
         return null;
     }
 
+    @Override
+    public Void visitArrayBase(ArrayBase expr) {
+        // The first element has the lowest address. Global slots are consecutive words
+        // in increasing address order, but local slots decrease from the frame pointer,
+        // so the first element of a local array is in its highest-numbered slot.
+        Location loc = expr.loc;
+        if (loc.isLocal) {
+            generateRefLocal(Type.INTEGER, loc.slot + expr.type.width() - 1);
+        } else {
+            generateRefGlobal(Type.INTEGER, loc.slot);
+        }
+
+        return null;
+    }
+
+    @Override
+    public Void visitElementAddr(ElementAddr expr) {
+        ArrayType array = (ArrayType) expr.base.type;
+
+        expr.base.accept(this);
+        expr.index.accept(this);
+        instructions.add(Instruction.makeCheckIndex(array.length));
+        generateLoadConstant(Type.INTEGER, 2 * expr.type.width());
+        generateBinOp(Binary.OpCode.IMUL);
+        generateBinOp(Binary.OpCode.IADD);
+
+        return null;
+    }
+
+    @Override
+    public Void visitElement(Element expr) {
+        expr.addr.accept(this);
+        instructions.add(Instruction.makeIndirectLoad(expr.type));
+
+        return null;
+    }
+
     private void generateCase(RCase kase, Label ifTrue, Label ifFalse) {
         Label skip = newLabel();
         kase.cond.accept(new BoolGen(skip, ifFalse));
@@ -344,9 +489,23 @@ public class Generator implements RExpr.Visitor<Void>, RStmt.Visitor<Void>, RPro
         generateBranch(ifTrue);
     }
 
+    // Number of words an argument occupies on the stack: a reference is always
+    // one word, otherwise the width of the value's type.
+    private int wordsOf(RExpr expr) {
+        if (expr instanceof Unary u && u.op == Unary.OpCode.REF) {
+            return 1;
+        }
+        if (expr instanceof ElementAddr) {
+            // An element passed as a VAR argument is passed by its address
+            return 1;
+        }
+        return expr.type.width();
+    }
+
     private void generateRef(Type type, Location loc) {
         if (loc.isVarParam) {
-            generateLoadLocal(type, loc.slot);
+            // The slot holds a pointer, one word whatever the type of the variable
+            generateLoadLocal(Type.INTEGER, loc.slot);
         } else if (loc.isLocal) {
             generateRefLocal(type, loc.slot);
         } else {

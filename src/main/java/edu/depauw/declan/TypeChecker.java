@@ -12,10 +12,13 @@ import edu.depauw.declan.ast.Procedure;
 import edu.depauw.declan.ast.Program;
 import edu.depauw.declan.ast.Scope;
 import edu.depauw.declan.ast.Stmt;
+import edu.depauw.declan.ast.TypeSpec;
 import edu.depauw.declan.ast.VarInfo;
 import edu.depauw.declan.ast.Decl.ConstDecl;
+import edu.depauw.declan.ast.Decl.TypeDecl;
 import edu.depauw.declan.ast.Decl.VarDecl;
 import edu.depauw.declan.ast.Expr.Binary;
+import edu.depauw.declan.ast.Expr.Index;
 import edu.depauw.declan.ast.Expr.Literal;
 import edu.depauw.declan.ast.Expr.Unary;
 import edu.depauw.declan.ast.Expr.Variable;
@@ -59,6 +62,10 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
     public RExpr visitBinaryExpr(Binary expr) {
         RExpr left = expr.left.accept(this);
         RExpr right = expr.right.accept(this);
+
+        if (isLong(left) || isLong(right)) {
+            return longBinary(expr, left, right);
+        }
 
         switch (expr.operator.type) {
         case PLUS:
@@ -129,6 +136,63 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
         }
     }
 
+    /**
+     * Typing for a binary expression with a LONGINT operand. Only + and - are
+     * implemented so far, with an INTEGER operand widened automatically.
+     */
+    private RExpr longBinary(Binary expr, RExpr left, RExpr right) {
+        int line = expr.operator.line;
+        if (left == null || right == null) {
+            return null;
+        }
+        switch (expr.operator.type) {
+        case PLUS:
+        case MINUS:
+        case STAR:
+        case DIV:
+        case MOD:
+            if (isIntOrLong(left) && isIntOrLong(right)) {
+                return RExpr.makeBinary(Type.LONGINT, expr.operator.type, ensureLong(left), ensureLong(right));
+            }
+            reporter.error(line, "LONGINT cannot be combined with " + otherTypeName(left, right) + " yet.");
+            return null;
+        case EQUAL:
+        case NOT_EQUAL:
+        case LESS:
+        case GREATER:
+        case LESS_EQUAL:
+        case GREATER_EQUAL:
+            if (isIntOrLong(left) && isIntOrLong(right)) {
+                return RExpr.makeBinary(Type.BOOLEAN, expr.operator.type, ensureLong(left), ensureLong(right));
+            }
+            reporter.error(line, "LONGINT cannot be compared with " + otherTypeName(left, right) + " yet.");
+            return null;
+        default:
+            reporter.error(line, "Operator is not supported for LONGINT.");
+            return null;
+        }
+    }
+
+    private String otherTypeName(RExpr left, RExpr right) {
+        return (left.type == Type.REAL || right.type == Type.REAL) ? "REAL" : "BOOLEAN";
+    }
+
+    private RExpr ensureLong(RExpr expr) {
+        if (expr.type == Type.LONGINT) {
+            return expr;
+        } else {
+            return RExpr.makeCast(Type.LONGINT, expr);
+        }
+    }
+
+    private boolean isLong(RExpr expr) {
+        return expr != null && expr.type == Type.LONGINT;
+    }
+
+    private boolean isIntOrLong(RExpr expr) {
+        return expr != null && (expr.type == Type.INTEGER || expr.type == Type.LONGINT);
+    }
+
     private RExpr ensureReal(RExpr expr) {
         if (expr.type == Type.REAL) {
             return expr;
@@ -138,24 +202,38 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
     }
 
     private boolean isNumeric(RExpr expr) {
-        return expr.type == Type.INTEGER || expr.type == Type.REAL;
+        return expr != null && (expr.type == Type.INTEGER || expr.type == Type.REAL);
     }
 
     private boolean isInteger(RExpr expr) {
-        return expr.type == Type.INTEGER;
+        return expr != null && expr.type == Type.INTEGER;
     }
 
     private boolean isBoolean(RExpr expr) {
-        return expr.type == Type.BOOLEAN;
+        return expr != null && expr.type == Type.BOOLEAN;
+    }
+
+    /** The initial value of an array variable: every word is zero. */
+    public static class ArrayInit {
+        public final ArrayType type;
+
+        public ArrayInit(ArrayType type) {
+            this.type = type;
+        }
     }
 
     public static Type typeOf(Object value) {
+        if (value instanceof ArrayInit init) {
+            return init.type;
+        }
         if (value instanceof Integer) {
             return Type.INTEGER;
         } else if (value instanceof Double) {
             return Type.REAL;
         } else if (value instanceof Boolean) {
             return Type.BOOLEAN;
+        } else if (value instanceof Long) {
+            return Type.LONGINT;
         }
         return null;
     }
@@ -168,6 +246,17 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
     @Override
     public RExpr visitUnaryExpr(Unary expr) {
         RExpr right = expr.right.accept(this);
+
+        if (isLong(right)) {
+            switch (expr.operator.type) {
+            case PLUS:
+            case MINUS:
+                return RExpr.makeUnary(Type.LONGINT, expr.operator.type, right);
+            default:
+                reporter.error(expr.operator.line, "Operand must be boolean.");
+                return null;
+            }
+        }
 
         switch (expr.operator.type) {
         case PLUS:
@@ -206,14 +295,82 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
             return null;
         }
 
+        if (info.type instanceof ArrayType) {
+            reporter.error(expr.name.line, "Array '" + name + "' must be indexed.");
+            return null;
+        }
+
         Location loc = new Location(info.slot, isLocal, info.isVarParam);
         return RExpr.makeVariable(info.type, loc);
+    }
+
+    @Override
+    public RExpr visitIndexExpr(Index expr) {
+        RExpr addr = designatorAddress(expr);
+        if (addr == null) {
+            return null;
+        }
+
+        if (addr.type instanceof ArrayType) {
+            reporter.error(expr.bracket.line, "A whole array cannot be used as a value.");
+            return null;
+        }
+
+        return RExpr.makeElement(addr);
+    }
+
+    /**
+     * Resolve a designator that names an array or an element of one into an
+     * expression that evaluates to its address. The type of the result is the type
+     * of the thing designated.
+     */
+    private RExpr designatorAddress(Expr expr) {
+        if (expr instanceof Variable v) {
+            String name = v.name.lexeme;
+            VarInfo info = current.lookup(name);
+            boolean isLocal = current.contains(name) && current != global;
+
+            if (info == null) {
+                reporter.error(v.name.line, "Unknown variable '" + name + "'.");
+                return null;
+            }
+            if (!(info.type instanceof ArrayType)) {
+                reporter.error(v.name.line, "'" + name + "' is not an array.");
+                return null;
+            }
+
+            return RExpr.makeArrayBase(info.type, new Location(info.slot, isLocal, info.isVarParam));
+        } else if (expr instanceof Index ix) {
+            RExpr base = designatorAddress(ix.base);
+            RExpr index = ix.index.accept(this);
+            if (base == null || index == null) {
+                return null;
+            }
+
+            if (!(base.type instanceof ArrayType array)) {
+                reporter.error(ix.bracket.line, "Only an array can be indexed.");
+                return null;
+            }
+            if (!isInteger(index)) {
+                reporter.error(ix.bracket.line, "Array index must be INTEGER.");
+                return null;
+            }
+
+            return RExpr.makeElementAddr(array.element, base, index);
+        }
+
+        reporter.error(0, "Invalid designator.");
+        return null;
     }
 
     @Override
     public RStmt visitAssignmentStmt(Assignment stmt) {
         String name = stmt.name.lexeme;
         int line = stmt.name.line;
+
+        if (stmt.target instanceof Index) {
+            return elementAssignment(stmt, line);
+        }
         VarInfo info = current.lookup(name);
         boolean isLocal = current.contains(name) && current != global;
 
@@ -226,13 +383,44 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
             RExpr right = stmt.expr.accept(this);
             Location loc = new Location(info.slot, isLocal, info.isVarParam);
 
-            if (left == right.type) {
+            if (left instanceof ArrayType) {
+                reporter.error(line, "A whole array cannot be assigned.");
+            } else if (right == null) {
+                // The error in the expression has already been reported
+                return null;
+            } else if (left == right.type) {
                 return RStmt.makeAssignment(line, left, loc, right);
             } else if (left == Type.REAL && isInteger(right)) {
                 return RStmt.makeAssignment(line, left, loc, ensureReal(right));
+            } else if (left == Type.LONGINT && isInteger(right)) {
+                return RStmt.makeAssignment(line, left, loc, ensureLong(right));
             } else {
                 reporter.error(line, "Incompatible types in assignment.");
             }
+        }
+
+        return null;
+    }
+
+    private RStmt elementAssignment(Assignment stmt, int line) {
+        RExpr addr = designatorAddress(stmt.target);
+        RExpr right = stmt.expr.accept(this);
+
+        if (addr == null || right == null) {
+            return null;
+        }
+
+        Type left = addr.type;
+        if (left instanceof ArrayType) {
+            reporter.error(line, "A whole array cannot be assigned.");
+        } else if (left == right.type) {
+            return RStmt.makeElementAssignment(line, left, addr, right);
+        } else if (left == Type.REAL && isInteger(right)) {
+            return RStmt.makeElementAssignment(line, left, addr, ensureReal(right));
+        } else if (left == Type.LONGINT && isInteger(right)) {
+            return RStmt.makeElementAssignment(line, left, addr, ensureLong(right));
+        } else {
+            reporter.error(line, "Incompatible types in assignment.");
         }
 
         return null;
@@ -262,8 +450,16 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
             RExpr rarg = arg.accept(this);
 
             Param param = proc.params.get(i);
+            if (rarg == null) {
+                // The error in the argument has already been reported
+                return null;
+            }
+
             if (param.isVar) {
-                if (param.type == rarg.type) {
+                if (param.type == rarg.type && rarg instanceof RExpr.Element element) {
+                    // An array element is passed by its address
+                    rargs.add(element.addr);
+                } else if (param.type == rarg.type) {
                     rargs.add(RExpr.makeRef(rarg));
                 } else {
                     reporter.error(line, "VAR parameter must match argument type exactly.");
@@ -273,6 +469,8 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
                     rargs.add(rarg);
                 } else if (param.type == Type.REAL && isInteger(rarg)) {
                     rargs.add(ensureReal(rarg));
+                } else if (param.type == Type.LONGINT && isInteger(rarg)) {
+                    rargs.add(ensureLong(rarg));
                 } else {
                     reporter.error(line, "Incompatible type in argument.");
                 }
@@ -296,32 +494,42 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
         boolean isLocal = current.contains(name) && current != global;
         if (info == null) {
             reporter.error(line, "Unknown variable '" + name + "'.");
-        } else if (info.type != Type.INTEGER) {
-            reporter.error(line, "Index variable must be of type INTEGER.");
+            return null;
+        }
+        if (info.type != Type.INTEGER && info.type != Type.LONGINT) {
+            reporter.error(line, "Index variable must be of type INTEGER or LONGINT.");
         } else if (info.isConstant()) {
             reporter.error(line, "Index variable must not be CONST.");
         }
+        Type indexType = info.type;
         Location loc = new Location(info.slot, isLocal, info.isVarParam);
 
         RExpr start = stmt.start.accept(this);
-        if (!isInteger(start)) {
+        if (start == null || (indexType == Type.INTEGER ? !isInteger(start) : !isIntOrLong(start))) {
             reporter.error(line, "Start index must be integral.");
+        } else if (indexType == Type.LONGINT) {
+            start = ensureLong(start);
         }
 
         RExpr stop = stmt.stop.accept(this);
-        if (!isInteger(stop)) {
+        if (stop == null || (indexType == Type.INTEGER ? !isInteger(stop) : !isIntOrLong(stop))) {
             reporter.error(line, "Stop index must be integral.");
+        } else if (indexType == Type.LONGINT) {
+            stop = ensureLong(stop);
         }
 
+        long step = 1;
         Object stepValue = ConstEvaluator.eval(stmt.step, current, reporter);
-        if (typeOf(stepValue) != Type.INTEGER) {
-            reporter.error(line, "Step index must be integral constant expression.");
-        } else {
-            stmt.stepValue = (int) stepValue;
+        Type stepType = typeOf(stepValue);
+        if (stepType == Type.INTEGER || (stepType == Type.LONGINT && indexType == Type.LONGINT)) {
+            step = ((Number) stepValue).longValue();
+            stmt.stepValue = (int) step;
 
-            if (stmt.stepValue == 0) {
+            if (step == 0) {
                 reporter.error(line, "Step index must not be zero.");
             }
+        } else {
+            reporter.error(line, "Step index must be integral constant expression.");
         }
 
         List<RStmt> rbody = new ArrayList<>();
@@ -329,7 +537,7 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
             rbody.add(statement.accept(this));
         }
 
-        return RStmt.makeFor(line, loc, start, stop, (int) stepValue, rbody);
+        return RStmt.makeFor(line, indexType, loc, start, stop, step, rbody);
     }
 
     @Override
@@ -395,6 +603,23 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
     }
 
     @Override
+    public Object visitTypeDecl(TypeDecl decl) {
+        String name = decl.name.lexeme;
+
+        if (current.containsType(name)) {
+            reporter.error(decl.name.line, "Duplicate type '" + name + "'.");
+            return null;
+        }
+
+        Type type = resolve(decl.type, decl.name.line);
+        if (type != null) {
+            current.addType(name, type);
+        }
+
+        return null;
+    }
+
+    @Override
     public Object visitVarDecl(VarDecl decl) {
         String name = decl.name.lexeme;
 
@@ -403,19 +628,63 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
             return null;
         }
 
-        current.add(name, new VarInfo(decl.type, false));
+        Type type = resolve(decl.type, decl.name.line);
+        if (type == null) {
+            return null;
+        }
 
-        return defaultValue(decl.type);
+        current.add(name, new VarInfo(type, false));
+
+        if (type instanceof ArrayType array) {
+            return new ArrayInit(array);
+        }
+        return defaultValue(type);
+    }
+
+    // The largest array, in words, that can be addressed with a 16-bit index
+    private static final int MAX_ARRAY_WORDS = 16000;
+
+    private Type resolve(TypeSpec spec, int line) {
+        if (spec instanceof TypeSpec.Basic basic) {
+            return basic.type;
+        } else if (spec instanceof TypeSpec.Named named) {
+            Type type = current.lookupType(named.name.lexeme);
+            if (type == null) {
+                reporter.error(named.name.line, "Unknown type '" + named.name.lexeme + "'.");
+            }
+            return type;
+        } else if (spec instanceof TypeSpec.Array array) {
+            Object length = ConstEvaluator.eval(array.length, current, reporter);
+            Type element = resolve(array.element, line);
+
+            if (!(length instanceof Integer n) || n <= 0) {
+                reporter.error(array.head.line, "Array length must be a positive INTEGER constant.");
+                return null;
+            }
+            if (element == null) {
+                return null;
+            }
+            if ((long) n * element.width() > MAX_ARRAY_WORDS) {
+                reporter.error(array.head.line, "Array is too large.");
+                return null;
+            }
+
+            return new ArrayType(n, element);
+        }
+
+        return null;
     }
 
     private Object defaultValue(Type type) {
-        switch (type) {
+        switch (type.kind()) {
         case BOOLEAN:
             return false;
         case INTEGER:
             return 0;
         case REAL:
             return 0.0;
+        case LONGINT:
+            return 0L;
         default:
             // Should not happen.
             return null;
@@ -426,7 +695,10 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
     public RProg visitProgram(Program program) {
         List<Object> inits = new ArrayList<>();
         for (Decl decl : program.decls) {
-            inits.add(decl.accept(this));
+            Object init = decl.accept(this);
+            if (!(decl instanceof TypeDecl)) {
+                inits.add(init);
+            }
         }
 
         List<RProc> procs = new ArrayList<>();
@@ -476,7 +748,10 @@ public class TypeChecker implements Expr.Visitor<RExpr>, Procedure.Visitor<RProc
 
         List<Object> inits = new ArrayList<>();
         for (Decl decl : proc.decls) {
-            inits.add(decl.accept(this));
+            Object init = decl.accept(this);
+            if (!(decl instanceof TypeDecl)) {
+                inits.add(init);
+            }
         }
 
         List<RStmt> stmts = new ArrayList<>();

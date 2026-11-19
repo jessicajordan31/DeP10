@@ -12,6 +12,7 @@ public class Scanner {
 
     static {
         keywords = new HashMap<>();
+        keywords.put("ARRAY", ARRAY);
         keywords.put("BEGIN", BEGIN);
         keywords.put("BOOLEAN", BOOLEAN);
         keywords.put("BY", BY);
@@ -25,7 +26,9 @@ public class Scanner {
         keywords.put("FOR", FOR);
         keywords.put("IF", IF);
         keywords.put("INTEGER", INTEGER);
+        keywords.put("LONGINT", LONGINT);
         keywords.put("MOD", MOD);
+        keywords.put("OF", OF);
         keywords.put("OR", OR);
         keywords.put("PROCEDURE", PROCEDURE);
         keywords.put("REAL", REAL);
@@ -33,6 +36,7 @@ public class Scanner {
         keywords.put("THEN", THEN);
         keywords.put("TO", TO);
         keywords.put("TRUE", TRUE);
+        keywords.put("TYPE", TYPE);
         keywords.put("UNTIL", UNTIL);
         keywords.put("VAR", VAR);
         keywords.put("WHILE", WHILE);
@@ -98,6 +102,12 @@ public class Scanner {
             break;
         case '#':
             addToken(NOT_EQUAL);
+            break;
+        case '[':
+            addToken(LEFT_BRACKET);
+            break;
+        case ']':
+            addToken(RIGHT_BRACKET);
             break;
         case ':':
             addToken(match('=') ? ASSIGN : COLON);
@@ -179,8 +189,27 @@ public class Scanner {
         } else if (match('.')) {
             realNumber();
         } else {
-            addToken(NUMBER, Integer.valueOf(source.substring(start, current)));
+            addToken(NUMBER, integerLiteral(source.substring(start, current), 10));
         }
+    }
+
+    /**
+     * The type of an integer literal is the minimal type to which the number
+     * belongs: Integer if it fits in 16 bits, otherwise Long (LONGINT).
+     */
+    private Object integerLiteral(String digits, int radix) {
+        try {
+            long v = Long.parseLong(digits, radix);
+            if (v <= Short.MAX_VALUE) {
+                return Integer.valueOf((int) v);
+            } else if (v <= Integer.MAX_VALUE) {
+                return Long.valueOf(v);
+            }
+        } catch (NumberFormatException e) {
+            // fall through to the error below
+        }
+        reporter.error(line, "Integer literal is too large (maximum is 2147483647).");
+        return Integer.valueOf(0);
     }
 
     private void hexNumber() {
@@ -192,7 +221,7 @@ public class Scanner {
             return;
         }
 
-        addToken(NUMBER, Integer.valueOf(source.substring(start, current - 1), 16));
+        addToken(NUMBER, integerLiteral(source.substring(start, current - 1), 16));
     }
 
     private void realNumber() {

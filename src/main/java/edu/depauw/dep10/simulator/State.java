@@ -31,6 +31,16 @@ public class State {
     private boolean running;
     private Operation op;
 
+    // Fancy machine: supervisor (protected) mode, timer and invalid-instruction trap.
+    // Off by default, so bare-metal programs see the original machine.
+    private boolean fancy = false;
+    private boolean startedInUser = false;   // the current instruction began in user mode
+    private boolean timerExpired = false;
+    // Memory protection: what to undo if the current user-mode instruction faults.
+    private final java.util.ArrayList<int[]> undoLog = new java.util.ArrayList<>();
+    private Word saveA, saveX, saveH, saveSP;
+    private UByte saveFlags;    // the timer hit zero but the trap waits for user mode
+
     private UByte[] memory = new UByte[65536];
     
     private InputStream in = System.in;
@@ -57,13 +67,20 @@ public class State {
     }
 
     void initialize(Word initPC, Word initSP) {
+        if (fancy) {
+            // The device registers (fault address, table base, timer: 0xFFF1 to 0xFFF6) start at 0.
+            // The stock OS images keep the end of a text message there.
+            for (int a = Pep10.FAULT_ADDRESS.value(); a < Pep10.TRAP_HANDLER_POINTER.value(); a++) {
+                memory[a] = UByte.of(0);
+            }
+        }
         setPC(mem2(initPC));
         setSP(mem2(initSP));
         running = true;
     }
     
     public UByte mem1(Word addr) {
-        // TODO check permissions
+        checkAccess(addr, false);
         if (addr.equals(Pep10.CHARIN)) {
             try {
                 return UByte.of(in.read());
@@ -72,7 +89,77 @@ public class State {
             }
         }
 
-        return memory[addr.value()];
+        return memory[physical(addr)];
+    }
+
+    /** Reads an instruction byte; in user mode the page must be executable. */
+    public UByte fetch1(Word addr) {
+        checkFetch(addr);
+        return mem1(addr);
+    }
+
+    /** Reads an operand specifier from the instruction stream. */
+    public Word fetch2(Word addr) {
+        checkFetch(addr);
+        checkFetch(addr.plus(1));
+        return mem2(addr);
+    }
+
+    /**
+     * The two protection bits for a page, read from the table the word at 0xFFF3 points to:
+     * 0 (00) no user access, 2 (10) read, 3 (11) read and write, 1 (01) read and execute.
+     */
+    private int protection(int page) {
+        int base = mem2Safe(Pep10.MMU_BASE).value();
+        if ((base & 1) != 0) {
+            // Stage 2: a page table of one word per page; the low byte holds the protection bits
+            return memory[((base & 0xFFFE) + 2 * page + 1) & 0xFFFF].value() & 3;
+        }
+        int entry = memory[(base + page / 4) & 0xFFFF].value();
+        return (entry >> (6 - 2 * (page % 4))) & 3;
+    }
+
+    /**
+     * Stage 2 address translation. When the base register at 0xFFF3 is odd, its upper 15 bits address a
+     * page table of 256 words, one per virtual page: the high byte is the physical frame number and the
+     * low two bits are the protection bits. Applies in user mode only; supervisor addresses are physical.
+     */
+    private int physical(Word addr) {
+        if (isProtecting()) {
+            int base = mem2Safe(Pep10.MMU_BASE).value();
+            if ((base & 1) != 0) {
+                int frame = memory[((base & 0xFFFE) + 2 * (addr.value() >> 8)) & 0xFFFF].value();
+                return (frame << 8) | (addr.value() & 0xFF);
+            }
+        }
+        return addr.value();
+    }
+
+    /** True while the memory protection table is being enforced: user mode on the fancy machine with a table set. */
+    public boolean isProtecting() {
+        return fancy && !getP() && mem2Safe(Pep10.MMU_BASE).value() != 0;
+    }
+
+    private void checkAccess(Word addr, boolean write) {
+        if (!isProtecting()) {
+            return;
+        }
+        int page = addr.value() >> 8;
+        int bits = protection(page);
+        boolean ok = page != 0xFF && (write ? bits == 3 : bits != 0);
+        if (!ok) {
+            throw new MemoryFault(addr, MemoryFault.DATA);
+        }
+    }
+
+    private void checkFetch(Word addr) {
+        if (!isProtecting()) {
+            return;
+        }
+        int page = addr.value() >> 8;
+        if (page == 0xFF || protection(page) != 1) {
+            throw new MemoryFault(addr, MemoryFault.FETCH);
+        }
     }
 
     public UByte mem1Safe(Word addr) {
@@ -80,6 +167,8 @@ public class State {
     }
     
     public Word mem2(Word addr) {
+        checkAccess(addr, false);
+        checkAccess(addr.plus(1), false);
         var hi = mem1(addr);
         var lo = mem1(addr.plus(1));
         return Word.of((hi.value() << 8) + lo.value());
@@ -92,17 +181,22 @@ public class State {
     }
 
     public void setMem1(Word addr, UByte n) {
-        // TODO check permissions
+        checkAccess(addr, true);
+        if (fancy && !getP()) {
+            undoLog.add(new int[] { physical(addr), memory[physical(addr)].value() });
+        }
         if (addr.equals(Pep10.SHUTDOWN)) {
             stop();
         } else if (addr.equals(Pep10.CHAROUT)) {
             out.write(n.value());
         }
 
-        memory[addr.value()] = n;
+        memory[physical(addr)] = n;
     }
 
     public void setMem2(Word addr, Word n) {
+        checkAccess(addr, true); // both bytes are checked before either is written
+        checkAccess(addr.plus(1), true);
         setMem1(addr, n.hi());
         setMem1(addr.plus(1), n.lo());
     }
@@ -186,6 +280,10 @@ public class State {
     public void setEA(Word address) {
         EA = address;
     }
+    
+    public boolean getP() {
+        return Flags.bit(7);
+    }
 
     public boolean getN() {
         return Flags.bit(3);
@@ -201,6 +299,10 @@ public class State {
 
     public boolean getC() {
         return Flags.bit(0);
+    }
+    
+    public void setP(boolean b) {
+        Flags = Flags.withBit(7, b);
     }
 
     public void setN(boolean b) {
@@ -220,9 +322,14 @@ public class State {
     }
 
     public void setFlags(UByte flags) {
-        Flags = UByte.of(flags.value() & 0x0F);
+        Flags = UByte.of(flags.value() & 0x8F);
     }
 
+    /**
+     * NZVC in the low four bits. On the fancy machine bit 7 is P: 1 in protected (supervisor) mode,
+     * 0 in user mode. A trap sets it and pushes the old value in the frame; SRET takes it back from
+     * the frame. MOVAFLG cannot change it.
+     */
     public UByte getFlags() {
         return Flags;
     }
@@ -387,14 +494,127 @@ public class State {
         err = new PrintStream(os);
     }
 
+    public boolean isFancy() {
+        return fancy;
+    }
+
+    /** Turns the fancy machine (protected/user modes, timer, invalid-instruction trap) on or off. */
+    public void setFancy(boolean fancy) {
+        this.fancy = fancy;
+        this.timerExpired = false;
+        this.setP(fancy); // start in protected mode if fancy
+    }
+
+    /**
+     * Pushes the 12-byte trap frame on the system stack (flags at +0, A +1, X +3, PC +5, SP +7,
+     * opcode +9, operand +10), enters protected mode and jumps to the trap handler.
+     * SCALL uses its own opcode and raw operand. The machine's own traps use opcode 0:
+     * operand 1 is the timer, operand 2 an invalid instruction (the bad opcode is then in the
+     * frame's opcode byte, so an invalid opcode 0 is told apart from the timer by its operand).
+     */
+    public void trap(UByte opcode, Word operand) {
+        var savedFlags = getFlags(); // includes P, the mode that is being interrupted
+        if (fancy) {
+            setP(true); // the trap itself runs as the OS, so the protection table does not apply to it
+        }
+        var t = mem2(Pep10.SYSTEM_STACK_POINTER);
+
+        setMem2(t.plus(-2), operand);
+        setMem1(t.plus(-3), opcode);
+        setMem2(t.plus(-5), SP);
+        setMem2(t.plus(-7), PC);
+        setMem2(t.plus(-9), X);
+        setMem2(t.plus(-11), A);
+        setMem1(t.plus(-12), savedFlags);
+
+        setSP(t.plus(-12));
+        setPC(mem2(Pep10.TRAP_HANDLER_POINTER));
+    }
+
+    /** Called when the current instruction is not defined. */
+    public void invalidInstruction() {
+        if (!fancy) {
+            throw new IllegalStateException("Unimplemented operation");
+        }
+        if (getP()) {
+            err.println(String.format("Invalid instruction 0x%02X at 0x%04X in supervisor mode; stopping",
+                    IR1.value(), PC.plus(-1).value()));
+            stop();
+        } else {
+            trap(IR1, Word.of(2));
+        }
+    }
+
+    /**
+     * Called after each instruction that actually ran. The timer counts down on every instruction,
+     * in supervisor mode too, like a device that does not care what mode the CPU is in. If it
+     * reaches zero while the OS is running, the trap waits until the program is back in user mode
+     * and has run one instruction (so the OS can always make progress), which stops a program
+     * from getting a bigger slice by making many system calls.
+     */
+    public void instructionDone() {
+        if (!fancy) {
+            return;
+        }
+        int t = mem2Safe(Pep10.TIMER).value();
+        if (t != 0) {
+            timerExpired = false; // the OS has set a fresh timer
+            t--;
+            memory[Pep10.TIMER.value()] = UByte.of(t >> 8);
+            memory[Pep10.TIMER.value() + 1] = UByte.of(t & 0xFF);
+            if (t == 0) {
+                timerExpired = true;
+            }
+        }
+        if (timerExpired && startedInUser && !getP()) {
+            timerExpired = false;
+            trap(UByte.of(0), Word.of(1));
+        }
+    }
+
     public void doStep(Controller control, Table table) {
         var origPC = PC;
-        
+        startedInUser = fancy && !getP();
+        if (startedInUser) {
+            // Remember enough to undo this instruction if memory protection stops it
+            saveA = A;
+            saveX = X;
+            saveH = H;
+            saveSP = SP;
+            saveFlags = Flags;
+            undoLog.clear();
+        }
+
         PRE = UByte.of(0);
-        IR1 = mem1(PC);
-        PC = PC.plus(1);
-        
-        var op = table.getOp(IR1);
-        op.perform(this, origPC, control);
+        try {
+            IR1 = fetch1(PC);
+            PC = PC.plus(1);
+
+            var op = table.getOp(IR1);
+            op.perform(this, origPC, control);
+        } catch (MemoryFault fault) {
+            if (!startedInUser) {
+                throw fault;
+            }
+            protectionTrap(fault, origPC);
+        }
+    }
+
+    /** Undoes the faulting instruction and traps: opcode byte 0, operand 3 (data) or 4 (fetch), address at 0xFFF1. */
+    private void protectionTrap(MemoryFault fault, Word origPC) {
+        for (int i = undoLog.size() - 1; i >= 0; i--) {
+            memory[undoLog.get(i)[0]] = UByte.of(undoLog.get(i)[1]);
+        }
+        undoLog.clear();
+        A = saveA;
+        X = saveX;
+        H = saveH;
+        SP = saveSP;
+        Flags = saveFlags;
+        PRE = UByte.of(0);
+        PC = origPC;
+        memory[Pep10.FAULT_ADDRESS.value()] = fault.address().hi();
+        memory[Pep10.FAULT_ADDRESS.value() + 1] = fault.address().lo();
+        trap(UByte.of(0), Word.of(fault.operand()));
     }
 }

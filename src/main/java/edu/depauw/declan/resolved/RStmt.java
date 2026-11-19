@@ -16,6 +16,8 @@ public abstract class RStmt {
 
         R visitCall(Call stmt);
 
+        R visitElementAssignment(ElementAssignment stmt);
+
         R visitEmpty(Empty stmt);
 
         R visitFor(For stmt);
@@ -47,6 +49,30 @@ public abstract class RStmt {
         @Override
         public String toString() {
             return String.format("%d: %s := %s", line, loc, right);
+        }
+    }
+
+    /** Stores the value of right at the address computed by addr. */
+    public static class ElementAssignment extends RStmt {
+        public final Type type;
+        public final RExpr addr;
+        public final RExpr right;
+
+        public ElementAssignment(int line, Type type, RExpr addr, RExpr right) {
+            super(line);
+            this.type = type;
+            this.addr = addr;
+            this.right = right;
+        }
+
+        @Override
+        public <R> R accept(Visitor<R> visitor) {
+            return visitor.visitElementAssignment(this);
+        }
+
+        @Override
+        public String toString() {
+            return String.format("%d: %s := %s", line, addr, right);
         }
     }
 
@@ -93,11 +119,13 @@ public abstract class RStmt {
         public final Location loc;
         public final RExpr start;
         public final RExpr stop;
-        public final int step;
+        public final long step;
+        public final Type type;
         public final List<RStmt> body;
 
-        public For(int line, Location loc, RExpr start, RExpr stop, int step, List<RStmt> body) {
+        public For(int line, Type type, Location loc, RExpr start, RExpr stop, long step, List<RStmt> body) {
             super(line);
+            this.type = type;
             this.loc = loc;
             this.start = start;
             this.stop = stop;
@@ -189,8 +217,13 @@ public abstract class RStmt {
         return new Empty(line);
     }
 
-    public static RStmt makeFor(int line, Location loc, RExpr start, RExpr stop, int step, List<RStmt> body) {
-        return new For(line, loc, start, stop, step, body);
+    public static RStmt makeElementAssignment(int line, Type type, RExpr addr, RExpr right) {
+        return new ElementAssignment(line, type, addr, right);
+    }
+
+    public static RStmt makeFor(int line, Type type, Location loc, RExpr start, RExpr stop, long step,
+            List<RStmt> body) {
+        return new For(line, type, loc, start, stop, step, body);
     }
 
     public static RStmt makeIf(int line, List<RCase> cases, List<RStmt> elseClause) {

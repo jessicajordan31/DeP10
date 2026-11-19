@@ -1,0 +1,168 @@
+package edu.depauw.dep10.resources;
+
+import edu.depauw.dep10.assemble.Assembler;
+import edu.depauw.dep10.assemble.Result;
+import edu.depauw.dep10.driver.ErrorLog;
+import edu.depauw.dep10.preprocess.Preprocessor;
+import edu.depauw.dep10.preprocess.Sources;
+import edu.depauw.dep10.simulator.PlainController;
+import edu.depauw.dep10.simulator.Simulator;
+import edu.depauw.dep10.simulator.State;
+import edu.depauw.dep10.simulator.StepCountController;
+import edu.depauw.dep10.util.Word;
+
+import static org.junit.jupiter.api.Assertions.fail;
+
+/**
+ * Shared helper for tests that assemble and run a full .pep source string
+ * (driver code plus one or more .INCLUDELIB library routines) against the
+ * real preprocessor, assembler, and simulator, rather than unit-testing a
+ * single opcode's exec() method in isolation. This is for library routines
+ * written in DeP10 assembly itself (int32.pep), which have no
+ * single Java class to unit-test directly.
+ *
+ * Driver code must come first in the source, with any .INCLUDELIB directives
+ * placed after the halt sequence but before .END: execution starts at
+ * address 0 and falls straight into whatever is physically first, so a
+ * library placed first would be executed instead of jumped into.
+ */
+public final class PepHarness {
+    private PepHarness() {}
+
+    /** Default step cap, generous for these routines (32-bit division is the heaviest, well under this). */
+    private static final int DEFAULT_STEP_LIMIT = 200_000;
+
+    public static State run(String source) {
+        return run(source, DEFAULT_STEP_LIMIT);
+    }
+
+    public static State run(String source, int stepLimit) {
+        return run(source, stepLimit, null);
+    }
+
+    /** As above, with the given text supplied as the console input (read through charIn). */
+    public static State run(String source, int stepLimit, String input) {
+        State state = load(assemble(source), input);
+        Simulator sim = new Simulator(state);
+        var control = new StepCountController(new PlainController(), stepLimit);
+        sim.run(control);
+
+        return state;
+    }
+
+    /** Runs a program and returns everything it wrote to the console output. */
+    public static String runForOutput(String source, int stepLimit) {
+        State state = load(assemble(source), null);
+        var out = new java.io.ByteArrayOutputStream();
+        state.setOutput(out);
+        Simulator sim = new Simulator(state);
+        sim.run(new StepCountController(new PlainController(), stepLimit));
+        return out.toString(java.nio.charset.StandardCharsets.US_ASCII);
+    }
+
+    /** Preprocesses and assembles a source string, failing the test on any error. Returns the object file text. */
+    public static String assemble(String source) {
+        return assembleResult(source).toObjectFile();
+    }
+
+    /**
+     * Assembles source as "Pep/10 System Code": only the standard macros are included, no OS header.
+     * This is what the GUI picks for a file with .SECTION lines. Returns the object file text.
+     */
+    public static String assembleSystem(String source) {
+        var log = new ErrorLog();
+        Sources sources = new Sources();
+        sources.addResource("/stdmacro.pep", log);
+        sources.addString(source);
+
+        var preprocessor = new Preprocessor(log);
+        var lines = preprocessor.preprocess(sources);
+        if (!log.noErrors()) {
+            fail("Preprocess errors: " + log.getMessages());
+        }
+
+        var assembler = new Assembler(log);
+        Result result = assembler.assemble(lines);
+        if (!log.noErrors() || result.hasErrors()) {
+            var sw = new java.io.StringWriter();
+            result.printErrors(new java.io.PrintWriter(sw));
+            fail("Assemble errors: " + log.getMessages() + "\n" + sw);
+        }
+        return result.toObjectFile();
+    }
+
+    /** As assemble, but returns the whole assembler Result (sections, symbols) instead of the object text. */
+    public static Result assembleResult(String source) {
+        var log = new ErrorLog();
+        Sources sources = new Sources();
+        sources.addResource("/pep10baremetal.peph", log);
+        sources.addString(source);
+
+        var preprocessor = new Preprocessor(log);
+        var lines = preprocessor.preprocess(sources);
+
+        if (!log.noErrors()) {
+            fail("Preprocess errors: " + log.getMessages());
+        }
+
+        var assembler = new Assembler(log);
+        Result result = assembler.assemble(lines);
+
+        if (!log.noErrors() || result.hasErrors()) {
+            var sw = new java.io.StringWriter();
+            result.printErrors(new java.io.PrintWriter(sw));
+            fail("Assemble errors: " + log.getMessages() + "\n" + sw);
+        }
+
+        return result;
+    }
+
+    /**
+     * Loads an object file into a fresh machine without running it, so a test
+     * can supply its own controller (for example one that simulates timer
+     * interrupts). The caller creates the Simulator, which sets the initial PC and SP.
+     */
+    public static State load(String obj, String input) {
+        State state = new State();
+        if (input != null) {
+            state.setInput(new java.io.ByteArrayInputStream(input.getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
+        }
+        state.loadResource("/pep10baremetal.pepo");
+        state.loadString(obj);
+        return state;
+    }
+
+    /**
+     * Loads a "Pep/10 System Code" object file into a fresh machine with no operating system image at all,
+     * like the editor does for a file that brings its own kernel and .INCLUDELIB "bmos".
+     */
+    public static State loadSystem(String obj, String input) {
+        State state = new State();
+        if (input != null) {
+            state.setInput(new java.io.ByteArrayInputStream(input.getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
+        }
+        state.loadString(obj);
+        return state;
+    }
+
+    /** As run, but assembles as System Code and loads no OS image. */
+    public static State runSystem(String source, int stepLimit) {
+        State state = loadSystem(assembleSystem(source), null);
+        new Simulator(state).run(new StepCountController(new PlainController(), stepLimit));
+        return state;
+    }
+
+    /** As runForOutput, but assembles as System Code and loads no OS image. */
+    public static String runSystemForOutput(String source, int stepLimit) {
+        State state = loadSystem(assembleSystem(source), null);
+        var out = new java.io.ByteArrayOutputStream();
+        state.setOutput(out);
+        new Simulator(state).run(new StepCountController(new PlainController(), stepLimit));
+        return out.toString(java.nio.charset.StandardCharsets.US_ASCII);
+    }
+
+    /** Reads a 16-bit memory word, for checking a fixed scratch address the driver code wrote a result to. */
+    public static int mem(State state, int addr) {
+        return state.mem2(Word.of(addr)).value();
+    }
+}

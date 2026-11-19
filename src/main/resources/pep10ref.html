@@ -26,7 +26,20 @@
     </style>
 </head><body>
 	<h1>Pep/10 Reference</h1>
-	<h2>Operations</h2>
+	<p>
+		<a href="#operations">Operations</a> |
+		<a href="#extended">Extended Table Operations</a>
+		(<a href="#arith">Arithmetic</a>,
+		<a href="#util">Utility</a>) |
+		<a href="#macros">Macros</a> |
+		<a href="#modes">Addressing Modes</a> |
+		<a href="#registers">Registers</a> |
+		<a href="#memory">Special Memory Locations</a> |
+		<a href="#fancy">Fancy Machine</a> |
+		<a href="#cycle">Operation Cycle</a> |
+		<a href="#directives">Directives</a>
+	</p>
+	<h2 id="operations">Operations</h2>
 	<table>
 		<tbody>
 			<tr>
@@ -52,7 +65,8 @@
 					X ← Mem[T + 3]<br>
 					PC ← Mem[T + 5]<br>
 					SP ← Mem[T + 7]<br>
-					Mem[FFFB] ← T + 12</td>
+					Mem[FFFB] ← T + 12<br>
+					Fancy machine: P ← Mem[T][0]; in user mode SRET traps like an invalid instruction</td>
 			</tr>
 			<tr>
 				<td valign="top">MOVFLGA</td>
@@ -83,6 +97,18 @@
 				<td valign="top">0000 0111</td>
 				<td valign="top">Monadic</td>
 				<td valign="top">{No operation}</td>
+			</tr>
+			<tr>
+				<td valign="top">Arithmetic Table</td>
+				<td valign="top">0000 1000</td>
+				<td valign="top">Extended Table</td>
+				<td valign="top">Prefix for extended table (see below)</td>
+			</tr>
+			<tr>
+				<td valign="top">Utility Table</td>
+				<td valign="top">0000 1001</td>
+				<td valign="top">Extended Table</td>
+				<td valign="top">Prefix for extended table (see below)</td>
 			</tr>
 			<tr>
 				<td valign="top">NEGr</td>
@@ -292,8 +318,428 @@
 			</tr>
 		</tbody>
 	</table>
+
+	<h2 id="extended">Extended Table Operations</h2>
+	<h3 id="arith">Arithmetic Table (prefix 0000 1000)</h3>
+	<table>
+		<tbody>
+			<tr>
+				<th>Mnemonic</th>
+				<th>Opcode</th>
+				<th>Modes</th>
+				<th>Effect</th>
+			</tr>
+			<tr>
+				<td valign="top">TSTA</td>
+				<td valign="top">0000 0010</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">N ← A &lt; 0 , Z ← A = 0 , V ← 0 , C ← 1<br>Same flags as CPWA 0,i</td>
+			</tr>
+			<tr>
+				<td valign="top">TSTX</td>
+				<td valign="top">0000 0011</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">N ← X &lt; 0 , Z ← X = 0 , V ← 0 , C ← 1<br>Same flags as CPWX 0,i</td>
+			</tr>
+			<tr>
+				<td valign="top">SXBA</td>
+				<td valign="top">0000 0100</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">A ← sign extension of the low byte of A<br>N ← A &lt; 0 , Z ← A = 0</td>
+			</tr>
+			<tr>
+				<td valign="top">SXBX</td>
+				<td valign="top">0000 0101</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">X ← sign extension of the low byte of X<br>N ← X &lt; 0 , Z ← X = 0</td>
+			</tr>
+			<tr>
+				<td valign="top">SXWA</td>
+				<td valign="top">0000 0110</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">H ← 0xFFFF if A &lt; 0, otherwise 0, so H:A is the 32-bit signed value of A<br>N ← A &lt; 0 , Z ← A = 0</td>
+			</tr>
+			<tr>
+				<td valign="top">SXWX</td>
+				<td valign="top">0000 0111</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">H ← 0xFFFF if X &lt; 0, otherwise 0, so H:X is the 32-bit signed value of X<br>N ← X &lt; 0 , Z ← X = 0</td>
+			</tr>
+			<tr>
+				<td valign="top">MULA</td>
+				<td valign="top">0001 0aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ← A × Operand (low 16 bits of signed product)<br>
+					N ← A &lt; 0 , Z ← A = 0 , V ← 0 , C ← {full product does not fit in 16 bits}</td>
+			</tr>
+			<tr>
+				<td valign="top">MULX</td>
+				<td valign="top">0001 1aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ← X × Operand (low 16 bits of signed product)<br>
+					N ← X &lt; 0 , Z ← X = 0 , V ← 0 , C ← {full product does not fit in 16 bits}</td>
+			</tr>
+			<tr>
+				<td valign="top">DIVA</td>
+				<td valign="top">0010 0aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ← A ÷ Operand (signed); on divide-by-zero, A ← 0<br>
+					N ← A &lt; 0 , Z ← A = 0 , V ← {divide-by-zero or overflow (only for −32768 ÷ −1)} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">DIVX</td>
+				<td valign="top">0010 1aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ← X ÷ Operand (signed); on divide-by-zero, X ← 0<br>
+					N ← X &lt; 0 , Z ← X = 0 , V ← {divide-by-zero or overflow (only for −32768 ÷ −1)} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">MODA</td>
+				<td valign="top">0011 0aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ← A mod Operand (signed); on divide-by-zero, A ← 0<br>
+					N ← A &lt; 0 , Z ← A = 0 , V ← {divide-by-zero} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">MODX</td>
+				<td valign="top">0011 1aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ← X mod Operand (signed); on divide-by-zero, X ← 0<br>
+					N ← X &lt; 0 , Z ← X = 0 , V ← {divide-by-zero} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">UDIVA</td>
+				<td valign="top">0100 0aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ← A ÷ Operand (unsigned); on divide-by-zero, A ← 0<br>
+					N ← A &lt; 0 (as signed 16-bit) , Z ← A = 0 , V ← {divide-by-zero} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">UDIVX</td>
+				<td valign="top">0100 1aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ← X ÷ Operand (unsigned); on divide-by-zero, X ← 0<br>
+					N ← X &lt; 0 (as signed 16-bit) , Z ← X = 0 , V ← {divide-by-zero} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">UMODA</td>
+				<td valign="top">0101 0aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ← A mod Operand (unsigned); on divide-by-zero, A ← 0<br>
+					N ← A &lt; 0 (as signed 16-bit) , Z ← A = 0 , V ← {divide-by-zero} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">UMODX</td>
+				<td valign="top">0101 1aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ← X mod Operand (unsigned); on divide-by-zero, X ← 0<br>
+					N ← X &lt; 0 (as signed 16-bit) , Z ← X = 0 , V ← {divide-by-zero} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">SMULA</td>
+				<td valign="top">0110 0aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">H:A ← A × Operand (signed, full 32-bit product)<br>
+					N ← H &lt; 0 , Z ← H:A = 0 , V unaffected , C ← {H is not just the sign-extension of A}</td>
+			</tr>
+			<tr>
+				<td valign="top">SMULX</td>
+				<td valign="top">0110 1aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">H:X ← X × Operand (signed, full 32-bit product)<br>
+					N ← H &lt; 0 , Z ← H:X = 0 , V unaffected , C ← {H is not just the sign-extension of X}</td>
+			</tr>
+			<tr>
+				<td valign="top">UMULA</td>
+				<td valign="top">0111 0aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">H:A ← A × Operand (unsigned, full 32-bit product)<br>
+					N ← H &lt; 0 (as signed 32-bit) , Z ← H:A = 0 , V unaffected , C ← {H ≠ 0}</td>
+			</tr>
+			<tr>
+				<td valign="top">UMULX</td>
+				<td valign="top">0111 1aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">H:X ← X × Operand (unsigned, full 32-bit product)<br>
+					N ← H &lt; 0 (as signed 32-bit) , Z ← H:X = 0 , V unaffected , C ← {H ≠ 0}</td>
+			</tr>
+			<tr>
+				<td valign="top">SDMA</td>
+				<td valign="top">1000 0aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ← (H:A) ÷ Operand , H ← (H:A) mod Operand (signed); on divide-by-zero, A ← 0, H ← 0<br>
+					N ← A &lt; 0 , Z ← A = 0 , V ← {quotient does not fit in 16 bits, or divide-by-zero} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">SDMX</td>
+				<td valign="top">1000 1aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ← (H:X) ÷ Operand , H ← (H:X) mod Operand (signed); on divide-by-zero, X ← 0, H ← 0<br>
+					N ← X &lt; 0 , Z ← X = 0 , V ← {quotient does not fit in 16 bits, or divide-by-zero} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">UDMA</td>
+				<td valign="top">1001 0aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ← (H:A) ÷ Operand , H ← (H:A) mod Operand (unsigned); on divide-by-zero, A ← 0, H ← 0<br>
+					N ← A &lt; 0 (as signed 16-bit) , Z ← A = 0 , V ← {quotient does not fit in 16 bits, or divide-by-zero} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">UDMX</td>
+				<td valign="top">1001 1aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ← (H:X) ÷ Operand , H ← (H:X) mod Operand (unsigned); on divide-by-zero, X ← 0, H ← 0<br>
+					N ← X &lt; 0 (as signed 16-bit) , Z ← X = 0 , V ← {quotient does not fit in 16 bits, or divide-by-zero} , C ← {divide-by-zero}</td>
+			</tr>
+			<tr>
+				<td valign="top">ADCA</td>
+				<td valign="top">1010 0aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ← A + Operand + C<br>N ← A &lt; 0 , Z ← A = 0 , V ← {overflow} , C ← {carry out}<br>Z reflects only this word, not a multiword total</td>
+			</tr>
+			<tr>
+				<td valign="top">ADCX</td>
+				<td valign="top">1010 1aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ← X + Operand + C<br>N ← X &lt; 0 , Z ← X = 0 , V ← {overflow} , C ← {carry out}</td>
+			</tr>
+			<tr>
+				<td valign="top">SBCA</td>
+				<td valign="top">1011 0aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ← A − Operand − (1 − C), so C = 1 means no borrow, as in SUBA<br>N ← A &lt; 0 , Z ← A = 0 , V ← {overflow} , C ← {no borrow}</td>
+			</tr>
+			<tr>
+				<td valign="top">SBCX</td>
+				<td valign="top">1011 1aaa</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ← X − Operand − (1 − C)<br>N ← X &lt; 0 , Z ← X = 0 , V ← {overflow} , C ← {no borrow}</td>
+			</tr>
+
+		</tbody>
+	</table>
+
+<h3 id="util">Utility Table (prefix 0000 1001)</h3>
+	<table>
+		<tbody>
+			<tr>
+				<th>Mnemonic</th>
+				<th>Opcode</th>
+				<th>Modes</th>
+				<th>Effect</th>
+			</tr>
+			<tr>
+				<td valign="top">SWAPAX</td>
+				<td valign="top">0000 0001</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">A ↔ X</td>
+			</tr>
+			<tr>
+				<td valign="top">SWAPHA</td>
+				<td valign="top">0000 0010</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">H ↔ A</td>
+			</tr>
+			<tr>
+				<td valign="top">SWAPHX</td>
+				<td valign="top">0000 0011</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">H ↔ X</td>
+			</tr>
+			<tr>
+				<td valign="top">PUSHA</td>
+				<td valign="top">0000 0100</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">SP ← SP − 2<br>
+					Mem[SP] ← A</td>
+			</tr>
+			<tr>
+				<td valign="top">PUSHX</td>
+				<td valign="top">0000 0101</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">SP ← SP − 2<br>
+					Mem[SP] ← X</td>
+			</tr>
+			<tr>
+				<td valign="top">POPA</td>
+				<td valign="top">0000 0110</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">A ← Mem[SP]<br>
+					SP ← SP + 2</td>
+			</tr>
+			<tr>
+				<td valign="top">POPX</td>
+				<td valign="top">0000 0111</td>
+				<td valign="top">Monadic</td>
+				<td valign="top">X ← Mem[SP]<br>
+					SP ← SP + 2</td>
+			</tr>
+			<tr>
+				<td valign="top">LEAA</td>
+				<td valign="top">0001 0aaa</td>
+				<td valign="top">d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ← effective address of Operand (no memory access)<br>N ← A &lt; 0 , Z ← A = 0</td>
+			</tr>
+			<tr>
+				<td valign="top">LEAX</td>
+				<td valign="top">0001 1aaa</td>
+				<td valign="top">d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ← effective address of Operand (no memory access)<br>N ← X &lt; 0 , Z ← X = 0</td>
+			</tr>
+			<tr>
+				<td valign="top">SWAPA</td>
+				<td valign="top">0010 0aaa</td>
+				<td valign="top">d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ↔ Mem[Operand] in one step<br>N ← A &lt; 0 , Z ← A = 0 (after the exchange)</td>
+			</tr>
+			<tr>
+				<td valign="top">SWAPX</td>
+				<td valign="top">0010 1aaa</td>
+				<td valign="top">d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ↔ Mem[Operand] in one step<br>N ← X &lt; 0 , Z ← X = 0 (after the exchange)</td>
+			</tr>
+			<tr>
+				<td valign="top">BRP</td>
+				<td valign="top">0011 000a</td>
+				<td valign="top">i, x</td>
+				<td valign="top">Fancy machine: if P = 1 (supervisor mode) then PC ← Operand. P is bit 7 of the byte MOVFLGA reads. Never taken on the plain machine.</td>
+			</tr>
+
+		</tbody>
+	</table>
+
+	<h2 id="macros">Macros</h2>
+	<p>Macros are written with a leading <samp>@</samp>, for example <samp>@DECO x,d</samp>. Most are defined in
+		<samp>stdmacro.pep</samp> and are available to every program. The stack macros (DUP, DDUP, DROP, DDROP,
+		NIP, DNIP, SWAP, DSWAP) are defined in <samp>stack.pep</samp>. Add <code>.INCLUDELIB "stack"</code> before the
+		first use of any of them, since macros must be defined before they are used. LIBC and MALLOC define
+		routines, so place them after the halt sequence. MALLOC must be the last statement in the program.</p>
+	<table>
+		<tbody>
+			<tr>
+				<th>Name</th>
+				<th>Modes</th>
+				<th>Effect</th>
+			</tr>
+			<tr>
+				<td valign="top">SNOP</td>
+				<td valign="top">i</td>
+				<td valign="top">No operation</td>
+			</tr>
+			<tr>
+				<td valign="top">DECI</td>
+				<td valign="top">d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">Reads a decimal integer from input and stores it at Operand</td>
+			</tr>
+			<tr>
+				<td valign="top">DECO</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">Writes Operand to output as a decimal integer</td>
+			</tr>
+			<tr>
+				<td valign="top">HEXO</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">Writes Operand to output as 4 hexadecimal digits. Flags unaffected.</td>
+			</tr>
+			<tr>
+				<td valign="top">STRO</td>
+				<td valign="top">d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">Writes the null-terminated ASCII string starting at Operand to output. Flags unaffected.</td>
+			</tr>
+			<tr>
+				<td valign="top">DUP</td>
+				<td valign="top">none</td>
+				<td valign="top">Duplicates the top word on the stack: SUBSP 2, then copies the old top word into the new top. Clobbers A. Requires <code>.INCLUDELIB "stack"</code> before first use.</td>
+			</tr>
+			<tr>
+				<td valign="top">DDUP</td>
+				<td valign="top">none</td>
+				<td valign="top">Duplicates the top 32-bit value (two words, high word at the lower address) on the stack. Clobbers A. Requires <code>.INCLUDELIB "stack"</code> before first use.</td>
+			</tr>
+			<tr>
+				<td valign="top">DROP</td>
+				<td valign="top">none</td>
+				<td valign="top">Discards the top word on the stack (ADDSP 2). Requires <code>.INCLUDELIB "stack"</code> before first use.</td>
+			</tr>
+			<tr>
+				<td valign="top">DDROP</td>
+				<td valign="top">none</td>
+				<td valign="top">Discards the top 32-bit value on the stack (ADDSP 4). Requires <code>.INCLUDELIB "stack"</code> before first use.</td>
+			</tr>
+			<tr>
+				<td valign="top">NIP</td>
+				<td valign="top">none</td>
+				<td valign="top">Discards the second word on the stack, keeping the top one. Clobbers A only. Requires <code>.INCLUDELIB "stack"</code> before first use.</td>
+			</tr>
+			<tr>
+				<td valign="top">DNIP</td>
+				<td valign="top">none</td>
+				<td valign="top">Discards the second 32-bit value on the stack, keeping the top one. Clobbers A only. Requires <code>.INCLUDELIB "stack"</code> before first use.</td>
+			</tr>
+			<tr>
+				<td valign="top">SWAP</td>
+				<td valign="top">none</td>
+				<td valign="top">Swaps the top two words on the stack. Clobbers A and X. Requires <code>.INCLUDELIB "stack"</code> before first use.</td>
+			</tr>
+			<tr>
+				<td valign="top">DSWAP</td>
+				<td valign="top">none</td>
+				<td valign="top">Swaps the top two 32-bit values on the stack. Clobbers A and X. Requires <code>.INCLUDELIB "stack"</code> before first use.</td>
+			</tr>
+			<tr>
+				<td valign="top">ASLAn, ASLXn, ASRAn, ASRXn,<br>ROLAn, ROLXn, RORAn, RORXn</td>
+				<td valign="top">none</td>
+				<td valign="top">Repeat the corresponding single-step shift or rotate n times, for n from 2 to 5 (for example ASLA3 is three ASLA). Flags are those left by the last repetition.</td>
+			</tr>
+			<tr>
+				<td valign="top">CHARI</td>
+				<td valign="top">d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">Reads one character from charIn and stores it in the byte at Operand (LDBA charIn,d then STBA Operand). Clobbers A.</td>
+			</tr>
+			<tr>
+				<td valign="top">CHARO</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">Writes the low byte of Operand to charOut (LDBA Operand then STBA charOut,d). Clobbers A.</td>
+			</tr>
+			<tr>
+				<td valign="top">PUSH</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">Pushes the word Operand on the stack (LDWA Operand, STWA −2,s, SUBSP 2). Clobbers A.</td>
+			</tr>
+			<tr>
+				<td valign="top">XCHGA</td>
+				<td valign="top">d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">Exchanges A with the word at Operand, using 4 bytes of stack temporaries. Not atomic; the SWAPA instruction does the same in one step. For the stack-relative modes, Operand is counted from SP after the temporaries are allocated.</td>
+			</tr>
+			<tr>
+				<td valign="top">XCHGX</td>
+				<td valign="top">d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">Exchanges X with the word at Operand, using 6 bytes of stack temporaries. A is preserved; N and Z come from the new X. Not atomic; the SWAPX instruction does the same in one step. The same note about stack-relative modes applies.</td>
+			</tr>
+			<tr>
+				<td valign="top">XNORA</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">A ← NOT (A XOR Operand)</td>
+			</tr>
+			<tr>
+				<td valign="top">XNORX</td>
+				<td valign="top">i, d, n, s, sf, x, sx, sfx</td>
+				<td valign="top">X ← NOT (X XOR Operand)</td>
+			</tr>
+			<tr>
+				<td valign="top">MALLOC</td>
+				<td valign="top">none</td>
+				<td valign="top">Defines a simple heap allocator, <samp>malloc</samp>, and the heap itself. Must be the last statement in the program. To allocate, load the number of bytes into A and <samp>CALL malloc,i</samp>; X returns a pointer to the new block. Memory is never freed. Place it after the halt sequence.</td>
+			</tr>
+			<tr>
+				<td valign="top">LIBC</td>
+				<td valign="top">none</td>
+				<td valign="top">Defines <samp>printf</samp>. After <samp>CALL printf,i</samp>, the format string pointer is at 2,s and the arguments follow it on the stack. In the format string, %H prints an argument in hexadecimal, %D in decimal, %S as a string (the argument is a pointer to a null-terminated string), %C as a character, and %% prints a percent sign. Any other placeholder prints an error message and powers off. Place it after the halt sequence.</td>
+			</tr>
+		</tbody>
+	</table>
 	
-	<h2>Addressing Modes</h2>
+	<h2 id="modes">Addressing Modes</h2>
 	<table>
 		<tr>
 			<th>Name</th>
@@ -360,7 +806,7 @@
 		</tr>
 	</table>
 	
-	<h2>Registers</h2>
+	<h2 id="registers">Registers</h2>
 	<table>
 		<tr>
 			<th>Name</th>
@@ -378,6 +824,12 @@
 			<td>Index</td>
 			<td>X</td>
 			<td>1</td>
+			<td>2 bytes</td>
+		</tr>
+		<tr>
+			<td>Hidden/High Word</td>
+			<td>H</td>
+			<td></td>
 			<td>2 bytes</td>
 		</tr>
 		<tr>
@@ -406,7 +858,7 @@
 		</tr>
 	</table>
 	
-	<h2>Special Memory Locations</h2>
+	<h2 id="memory">Special Memory Locations</h2>
 	<ul>
 		<li>FFF7,FFF8: Trap handler</li>
 		<li>FFF9,FFFA: Boot address</li>
@@ -416,7 +868,48 @@
 		<li>FFFF: Power off (pwrOff)</li>
 	</ul>
 	
-	<h2>Operation Cycle</h2>
+	<h2 id="fancy">Fancy Machine (optional)</h2>
+	<p>
+		Turn on with <samp>run --fancy</samp>, the toolbar checkbox, or <samp>State.setFancy</samp>. It adds user and
+		supervisor modes, a timer and memory protection to Pep/10. The plain machine is unchanged.
+	</p>
+	<ul>
+		<li>FFF1,FFF2: Fault address (the virtual address that caused a memory fault)</li>
+		<li>FFF3,FFF4: MMU base register. 0 = off. Even = stage 1 protection table (64 bytes, two bits per page).
+			Odd = stage 2 translation: the page table is at the value minus 1</li>
+		<li>FFF5,FFF6: Timer. Counts down once per instruction in either mode; 0 = off. At zero it traps (opcode byte 0, operand 1)</li>
+	</ul>
+	<p>
+		<b>Modes.</b> The machine boots in protected (supervisor) mode. Every trap sets the P flag (bit 7 of the flags byte
+		read by MOVFLGA) and saves the old value in the trap frame; SRET restores the mode from the frame and is privileged.
+		BRP branches if P is set. MOVAFLG cannot change P.
+	</p>
+	<p>
+		<b>Traps.</b> Opcode byte 0 in the frame means the machine itself trapped; the operand says why:
+		1 timer, 2 invalid instruction in user mode, 3 data access not allowed, 4 instruction fetch not allowed.
+	</p>
+	<p>
+		<b>Pages.</b> 256 bytes; the high byte of an address is its page number. Page FF is never open to user mode.
+		Supervisor mode is not checked or translated.
+	</p>
+	<table>
+		<tr><th>bits</th><th>meaning</th></tr>
+		<tr><td>00</td><td>no access / not present</td></tr>
+		<tr><td>10</td><td>read only</td></tr>
+		<tr><td>11</td><td>read and write</td></tr>
+		<tr><td>01</td><td>read and execute</td></tr>
+	</table>
+	<p>
+		<b>Stage 1 (protection).</b> The table has two bits per page, page 0 in the top two bits of the first byte.
+		The <samp>.SECTION</samp> flags r, rw and rx produce these bits.
+	</p>
+	<p>
+		<b>Stage 2 (translation).</b> The table has one word per page (512 bytes): the high byte is the physical frame
+		number and the low two bits are the protection bits above. A user address is split into page and offset, the
+		frame replaces the page, and a page with bits 00 faults. A fault undoes the instruction, so SRET retries it.
+	</p>
+
+	<h2 id="cycle">Operation Cycle</h2>
 <pre>
 PC ← Mem[FFF9]
 SP ← Mem[FFFB]
@@ -434,7 +927,7 @@ do
 while not power off && instruction was legal
 </pre>
 
-	<h2>Directives</h2>
+	<h2 id="directives">Directives</h2>
 	<dl>
 		<dt><samp>.ASCII "string"</samp></dt>
 		<dd>insert the ASCII character code bytes for the string</dd>
@@ -457,6 +950,8 @@ while not power off && instruction was legal
 		<dd>add the symbol to the export list</dd>
 		<dt><samp>.INCLUDE "file"</samp></dt>
 		<dd>assemble the contents of the given file at the current location</dd>
+		<dt><samp>.INCLUDELIB "resource"</samp></dt>
+		<dd>assemble the contents of the given resource library at the current location</dd>
 		<dt><samp>.INPUT sym</samp></dt>
 		<dd>mark the symbol as memory-mapped input</dd>
 		<dt><samp>.ORG addr</samp></dt>

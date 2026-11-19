@@ -4,15 +4,24 @@ import java.util.ArrayList;
 import java.util.List;
 
 import edu.depauw.declan.ir.Instruction;
-import edu.depauw.declan.ir.Label;
 import edu.depauw.declan.ir.Instruction.BinaryString;
 import edu.depauw.declan.ir.Instruction.Nullary;
+import edu.depauw.declan.ir.Instruction.UnaryFloat;
 import edu.depauw.declan.ir.Instruction.UnaryInteger;
 import edu.depauw.declan.ir.Instruction.UnaryString;
+import edu.depauw.declan.ir.Label;
 
 public class Pep10 {
     private List<String> result;
     private int labelSeqNo;
+    private boolean usesDoubleword;
+    private boolean usesMultiply;
+    private boolean usesDivide;
+    private boolean usesPrintLong;
+    private boolean usesReadLong;
+    private boolean usesStackMacros;
+    private boolean usesRangeCheck;
+    private boolean usesFloats;
 
     public Pep10() {
         this.result = new ArrayList<>();
@@ -27,6 +36,8 @@ public class Pep10 {
                 translate(n);
             } else if (instr instanceof Instruction.UnaryInteger ui) {
                 translate(ui);
+            } else if (instr instanceof Instruction.UnaryFloat uf) {
+                translate(uf);
             } else if (instr instanceof Instruction.UnaryString us) {
                 translate(us);
             } else if (instr instanceof Instruction.BinaryString bs) {
@@ -38,7 +49,112 @@ public class Pep10 {
 
         writeRuntime();
 
+        // The whole 32-bit library goes in as one blob, after the code that ends in RET
+        if (usesDoubleword || usesMultiply || usesDivide || usesPrintLong || usesReadLong) {
+            out(".INCLUDELIB \"int32\"");
+        }
+        if (usesFloats) {
+            out(".INCLUDELIB \"float16\"");
+        }
+        // Macros must be defined before they are used, so this goes first
+        if (usesStackMacros) {
+            result.add(0, ".INCLUDELIB \"stack\"");
+        }
+
         return result;
+    }
+
+    void writeWriteLong() {
+        if (!usesPrintLong) {
+            return;
+        }
+        // WriteLong(n): a space, then the signed decimal value. The argument is
+        // already in the layout DPRINTD wants (high word at the lower address),
+        // but DPRINTD takes its own copy pushed low word first.
+        out("WriteLong: LDBA ' ',i");
+        out("       STBA charOut,d");
+        out("       LDWA 4,s");
+        out("       PUSHA");
+        out("       LDWA 4,s");
+        out("       PUSHA");
+        out("       CALL DPRINTD,i");
+        out("       ADDSP 4,i");
+        out("       RET");
+    }
+
+    void writeRangeCheck() {
+        if (!usesRangeCheck) {
+            return;
+        }
+        // An array index was out of range: say so and stop the machine
+        out("_range: LDWX 0,i");
+        out("_rng0: LDBA _rngMsg,x");
+        out("       BREQ _rng1");
+        out("       STBA charOut,d");
+        out("       ADDX 1,i");
+        out("       BR _rng0");
+        out("_rng1: LDBA 0xDE,i");
+        out("       STBA pwrOff,d");
+        out("_rng2: BR _rng2");
+        out("_rngMsg: .ASCII \"Array index out of range\\n\\x00\"");
+    }
+
+    void writeReadLong() {
+        if (!usesReadLong) {
+            return;
+        }
+        // ReadLong(VAR n): reserve a 4-byte result slot, call DREAD (which returns
+        // the value there, like FRead; no static storage, so it is safe under
+        // preemption), then store it through the argument, the address of n's
+        // high word with the low word 2 bytes after it.
+        out("ReadLong: SUBSP 4,i");
+        out("       CALL DREAD,i");
+        out("       LDWA 0,s");
+        out("       STWA 6,sf");
+        out("       LDWA 2,s");
+        out("       LDWX 2,i");
+        out("       STWA 6,sfx");
+        out("       ADDSP 4,i");
+        out("       RET");
+    }
+    
+    void writeWriteReal() {
+        if (!usesFloats) {
+            return;
+        }
+        out("WriteReal: LDBA ' ',i");
+        out("       STBA charOut,d");
+        out("       LDWA 2,s");
+        out("       PUSHA");
+        out("       CALL FPrint,i");
+        out("       ADDSP 2,i");
+        out("       RET");
+    }
+    
+    void writeReadReal() {
+        if (!usesFloats) {
+            return;
+        }
+        out("ReadReal: SUBSP 2,i");
+        out("       CALL FRead,i");
+        out("       ADDSP 2,i");
+        out("       LDWA -2,s");
+        out("       STWA 2,sf");
+        out("       RET");
+    }
+    
+    void writeRound() {
+        if (!usesFloats) {
+            return;
+        }
+        out("Round: LDWA 4,s");
+        out("       STWA -2,s");
+        out("       SUBSP 2,i");
+        out("       CALL FToI,i");
+        out("       ADDSP 2,i");
+        out("       LDWA -2,s");
+        out("       STWA 2,sf");
+        out("       RET");
     }
 
     void writeRuntime() {
@@ -48,133 +164,53 @@ public class Pep10 {
         out("       STBA charOut,d");
         out("       @DECO 2,s");
         out("       RET");
+        writeWriteLong();
+        writeReadLong();
+        writeRangeCheck();
         out("WriteLn: LDBA '\\n',i");
         out("       STBA charOut,d");
         out("       RET");
-        // _imul does 16-bit signed integer multiplication,
-        // giving a 32-bit result.
-        // It preserves the X register.
-        // Stack before call:
-        //   SP+0: B (multiplier)
-        //   SP+2: A (multiplicand)
-        // Stack during call:
-        //   SP-4: save X (frame pointer)
-        //   SP-2: temporary
-        //   SP+0: return address
-        //   SP+2: B (modified)
-        //   SP+4: A
-        // Stack after call:
-        //   SP+0: A*B (product) high word; discard if only a 16-bit result
-        //   SP+2: A*B (product) low word
-        out("_imul: STWX -4,s");
-        out("       LDWX 16,i");
-        out("       LDWA 0,i");
-        out("       STWA -2,s");
-        out("_im0:  LDWA -2,s");
-        out("       ASRA");
-        out("       STWA -2,s");
-        out("       LDWA 2,s");
-        out("       RORA");
-        out("       STWA 2,s");
-        out("       BRC _im2");
-        out("_im1:  SUBX 1,i");
-        out("       BRNE _im0");
-        out("       BR _im4");
-        out("_im2:  LDWA -2,s");
-        out("       SUBA 4,s");
-        out("       STWA -2,s");
-        out("_im3:  SUBX 1,i");
-        out("       BREQ _im4");
-        out("       LDWA -2,s");
-        out("       ASRA");
-        out("       STWA -2,s");
-        out("       LDWA 2,s");
-        out("       RORA");
-        out("       STWA 2,s");
-        out("       BRC _im3");
-        out("       LDWA -2,s");
-        out("       ADDA 4,s");
-        out("       STWA -2,s");
-        out("       BR _im1");
-        out("_im4:  LDWA -2,s");
-        out("       ASRA");
-        out("       LDWX 2,s");
-        out("       RORX");
-        out("       STWX 4,s");
-        out("       STWA 2,s");
-        out("       LDWX -4,s");
-        out("       RET");
-        // _idiv does 16-bit signed integer division,
-        // giving a 16-bit quotient and remainder.
-        // The quotient is rounded toward zero (truncating division),
-        // and the remainder has the same sign as the dividend -- these
-        // are the same as the Java / and % operators.
-        // Satisfies (A/B)*B + (A%B) = A, and |A%B| < |divisor| (if non-zero).
-        // If the divisor is zero, the quotient is arbitrary and the
-        // remainder is the dividend.
-        // Special case: -32768 / -1 = -32768.
-        // It preserves the X register.
-        // Stack before call:
-        //   SP+0: B (divisor)
-        //   SP+2: A (dividend)
-        // Stack during call:
-        //   SP-6: save X (frame pointer)
-        //   SP-4: temp
-        //   SP-2: temp
-        //   SP+0: return address
-        //   SP+2: B
-        //   SP+4: A (modified)
-        // Stack after call:
-        //   SP+0: A%B (remainder)
-        //   SP+2: A/B (quotient)
-        out("_idiv: STWX -6,s");
-        out("       LDWX 0,i");
-        out("       LDWA 4,s");
-        out("       BRGE _id5");
-        out("       NEGA");
-        out("       STWA 4,s");
-        out("       ORX 3,i");
-        out("_id5:  LDWA 2,s");
-        out("       BRGE _id6");
-        out("       NEGA");
-        out("       STWA 2,s");
-        out("       ADDX 2,i");
-        out("_id6:  STBX -3,s");
-        out("       LDWA 0,i");
-        out("       STWA -2,s");
-        out("       LDWX 16,i");
-        out("_id7:  LDWA 4,s");
-        out("       ASLA");
-        out("       STWA 4,s");
-        out("       LDWA -2,s");
-        out("       ROLA");
-        out("       BRC _id8");
-        out("       SUBA 2,s");
-        out("       BR _id9");
-        out("_id8:  ADDA 2,s");
-        out("_id9:  STWA -2,s");
-        out("       BRLT _id10");
-        out("       LDWA 4,s");
-        out("       ORA 1,i");
-        out("       STWA 4,s");
-        out("_id10: SUBX 1,i");
-        out("       BRNE _id7");
-        out("       LDWA -2,s");
-        out("       BRGE _id11");
-        out("       ADDA 2,s");
-        out("_id11: LDBX -3,s");
-        out("       ANDX 1,i");
-        out("       BREQ _id12");
-        out("       NEGA");
-        out("_id12: STWA 2,s");
-        out("       LDBX -3,s");
-        out("       ANDX 2,i");
-        out("       BREQ _id13");
-        out("       LDWA 4,s");
-        out("       NEGA");
-        out("       STWA 4,s");
-        out("_id13: LDWX -6,s");
-        out("       RET");
+        writeWriteReal();
+        writeReadReal();
+        writeRound();
+    }
+
+    // Compare the two 32-bit values on top of the stack (A below B, each with
+    // its high word at the lower address), branching to yes if A = B and to no
+    // otherwise. The stack is left as it was; the caller removes the 8 bytes.
+    void emitLongEqual(String yes, String no) {
+        out("LDWA 4,s");
+        out("CPWA 0,s");
+        out("BRNE %s,i", no);
+        out("LDWA 6,s");
+        out("CPWA 2,s");
+        out("BRNE %s,i", no);
+        out("BR %s,i", yes);
+    }
+
+    // Same, branching to yes if A < B as signed 32-bit values. The high words
+    // decide unless they are equal, in which case the low words are compared
+    // as unsigned numbers by flipping their top bit and comparing as signed.
+    void emitLongLess(String yes, String no) {
+        out("LDWA 4,s");
+        out("CPWA 0,s");
+        out("BRLT %s,i", yes);
+        out("BRGT %s,i", no);
+        String y2 = newLabel();
+        String n2 = newLabel();
+        out("LDWA 2,s");
+        out("XORA 0x8000,i");
+        out("SUBSP 2,i");
+        out("STWA 0,s");
+        out("LDWA 8,s");
+        out("XORA 0x8000,i");
+        out("CPWA 0,s");
+        out("BRLT %s,i", y2);
+        out("BR %s,i", n2);
+        out("%s: ADDSP 2,i", y2);
+        out("BR %s,i", yes);
+        out("%s: ADDSP 2,i", n2);
+        out("BR %s,i", no);
     }
 
     String newLabel() {
@@ -203,6 +239,42 @@ public class Pep10 {
         case END:
             out("RET");
             break;
+        case IND_LD1:
+            // replace the address on the stack with the word it points to
+            out("LDWA 0,sf");
+            out("STWA 0,s");
+            break;
+        case IND_LD2:
+            // replace the address with the two words it points to, high word on top
+            out("SUBSP 2,i");
+            out("LDWA 2,sf");
+            out("STWA 0,s");
+            out("LDWA 2,s");
+            out("ADDA 2,i");
+            out("STWA 2,s");
+            out("LDWA 2,sf");
+            out("STWA 2,s");
+            break;
+        case IND_ST1:
+            // stack: value on top, address below
+            out("LDWA 0,s");
+            out("STWA 2,sf");
+            out("ADDSP 4,i");
+            break;
+        case IND_ST2:
+            // stack: high word on top, then low word, then the address
+            out("LDWA 4,s");
+            out("ADDA 2,i");
+            out("STWA 4,s");
+            out("LDWA 2,s");
+            out("STWA 4,sf");
+            out("LDWA 4,s");
+            out("SUBA 2,i");
+            out("STWA 4,s");
+            out("LDWA 0,s");
+            out("STWA 4,sf");
+            out("ADDSP 6,i");
+            break;
         case IADD:
             out("LDWA 2,s");
             out("ADDA 0,s");
@@ -210,8 +282,22 @@ public class Pep10 {
             out("STWA 0,s");
             break;
         case IDIV:
-            out("CALL _idiv,i");
+            out("LDWA 2,s");
+            out("DIVA 0,s");
             out("ADDSP 2,i");
+            out("STWA 0,s");
+            break;
+        case IMOD:
+            out("LDWA 2,s");
+            out("MODA 0,s");
+            out("ADDSP 2,i");
+            out("STWA 0,s");
+            break;
+        case IMUL:
+            out("LDWA 2,s");
+            out("MULA 0,s");
+            out("ADDSP 2,i");
+            out("STWA 0,s");
             break;
         case IEQ: {
             String l1 = newLabel();
@@ -226,6 +312,11 @@ public class Pep10 {
             out("STWA 0,s");
             break;
         }
+        case FEQ:
+            usesFloats = true;
+            out("CALL FEq,i");
+            out("ADDSP 2,i");
+            break;
         case ILT: {
             String l1 = newLabel();
             String l2 = newLabel();
@@ -239,14 +330,9 @@ public class Pep10 {
             out("STWA 0,s");
             break;
         }
-        case IMOD:
-            out("CALL _idiv,i");
-            out("LDWA 0,s");
-            out("STWA 2,s");
-            out("ADDSP 2,i");
-            break;
-        case IMUL:
-            out("CALL _imul,i");
+        case FLT:
+            usesFloats = true;
+            out("CALL FLt,i");
             out("ADDSP 2,i");
             break;
         case INEG:
@@ -260,6 +346,94 @@ public class Pep10 {
             out("ADDSP 2,i");
             out("STWA 0,s");
             break;
+        case LADD:
+            // Two 32-bit values, each high word at the lower address. DADD replaces
+            // the first operand with the sum; discard the second.
+            usesDoubleword = true;
+            out("CALL DADD,i");
+            out("ADDSP 4,i");
+            break;
+        case LSUB:
+            usesDoubleword = true;
+            out("CALL DSUB,i");
+            out("ADDSP 4,i");
+            break;
+        case LMUL:
+            usesMultiply = true;
+            out("CALL DMul,i");
+            out("ADDSP 4,i");
+            break;
+        case LDIV:
+            // DDiv leaves the quotient in the first operand's slot and the
+            // remainder in the second's; keep the quotient
+            usesDivide = true;
+            out("CALL DDiv,i");
+            out("ADDSP 4,i");
+            break;
+        case LMOD:
+            // Keep the remainder: drop the quotient from under it
+            usesDivide = true;
+            usesStackMacros = true;
+            out("CALL DDiv,i");
+            out("@DNIP");
+            break;
+        case LNEG: {
+            // -x = ~x + 1: negate the low word, invert the high word, and add
+            // the carry into it when the low word was zero
+            String done = newLabel();
+            out("LDWA 0,s");
+            out("NOTA");
+            out("STWA 0,s");
+            out("LDWA 2,s");
+            out("NEGA");
+            out("STWA 2,s");
+            out("BRNE %s,i", done);
+            out("LDWA 0,s");
+            out("ADDA 1,i");
+            out("STWA 0,s");
+            out("%s: NOP", done);
+            break;
+        }
+        case LEQL: {
+            String yes = newLabel();
+            String no = newLabel();
+            String end = newLabel();
+            emitLongEqual(yes, no);
+            out("%s: LDWA 1,i", yes);
+            out("BR %s,i", end);
+            out("%s: LDWA 0,i", no);
+            out("%s: ADDSP 6,i", end);
+            out("STWA 0,s");
+            break;
+        }
+        case LLT: {
+            String yes = newLabel();
+            String no = newLabel();
+            String end = newLabel();
+            emitLongLess(yes, no);
+            out("%s: LDWA 1,i", yes);
+            out("BR %s,i", end);
+            out("%s: LDWA 0,i", no);
+            out("%s: ADDSP 6,i", end);
+            out("STWA 0,s");
+            break;
+        }
+        case LONG: {
+            // Widen the INTEGER on top of the stack to a 32-bit value: the old word
+            // becomes the low word, and the new high word is its sign extension.
+            String neg = newLabel();
+            out("LDWA 0,s");
+            out("SUBSP 2,i");
+            out("STWA 2,s");
+            out("LDWA 0,i");
+            out("STWA 0,s");
+            out("LDWA 2,s");
+            out("BRGE %s,i", neg);
+            out("LDWA -1,i");
+            out("STWA 0,s");
+            out("%s: NOP", neg);
+            break;
+        }
         case LAND:
             out("LDWA 2,s");
             out("ANDA 0,s");
@@ -304,8 +478,38 @@ public class Pep10 {
             out("LDWA -2,s");
             out("STWA 0,s");
             break;
-        default:
-            System.err.println("Unsupported instruction: " + n);
+        case FADD:
+            usesFloats = true;
+            out("CALL FAdd,i");
+            out("ADDSP 2,i");
+            break;
+        case FDIV:
+            usesFloats = true;
+            out("CALL FDiv,i");
+            out("ADDSP 2,i");
+            break;
+        case FLOAT:
+            usesFloats = true;
+            out("CALL IToF,i");
+            break;
+        case FMUL:
+            usesFloats = true;
+            out("CALL FMul,i");
+            out("ADDSP 2,i");
+            break;
+        case FNEG:
+            out("LDWA 0,s");
+            out("XORA 0x8000,i");
+            out("STWA 0,s");
+            break;
+        case FSUB:
+            usesFloats = true;
+            out("LDWA 0,s");
+            out("XORA 0x8000,i");
+            out("STWA 0,s");
+            out("CALL FAdd,i");
+            out("ADDSP 2,i");
+            break;
         }
     }
 
@@ -323,16 +527,19 @@ public class Pep10 {
             out("STWA 0,s");
             break;
         case ILD_GLOBAL:
+        case FLD_GLOBAL:
             out("LDWA _g%d,d", ui.value);
             out("SUBSP 2,i");
             out("STWA 0,s");
             break;
         case ILD_LOCAL:
+        case FLD_LOCAL:
             out("LDWA %d,x", -2 * ui.value);
             out("SUBSP 2,i");
             out("STWA 0,s");
             break;
         case ILD_VARP:
+        case FLD_VARP:
             out("LDWA %d,x", -2 * ui.value);
             out("SUBSP 2,i");
             out("STWA 0,s");
@@ -340,11 +547,13 @@ public class Pep10 {
             out("STWA 0,s");
             break;
         case IRF_GLOBAL:
+        case FRF_GLOBAL:
             out("LDWA _g%d,i", ui.value);
             out("SUBSP 2,i");
             out("STWA 0,s");
             break;
         case IRF_LOCAL:
+        case FRF_LOCAL:
             out("SUBSP 2,i");
             out("STWX 0,s");
             out("LDWA 0,s");
@@ -352,21 +561,95 @@ public class Pep10 {
             out("STWA 0,s");
             break;
         case IST_GLOBAL:
+        case FST_GLOBAL:
             out("LDWA 0,s");
             out("ADDSP 2,i");
             out("STWA _g%d,d", ui.value);
             break;
         case IST_LOCAL:
+        case FST_LOCAL:
             out("LDWA 0,s");
             out("ADDSP 2,i");
             out("STWA %d,x", -2 * ui.value);
             break;
         case IST_VARP:
+        case FST_VARP:
             out("LDWA %d,x", -2 * ui.value);
             out("STWA -2,s");
             out("LDWA 0,s");
             out("STWA -2,sf");
             out("ADDSP 2,i");
+            break;
+        case LLD_CONST:
+            out("LDWA %d,i", (short) (ui.value >>> 16));
+            out("SUBSP 4,i");
+            out("STWA 0,s");
+            out("LDWA %d,i", (short) ui.value);
+            out("STWA 2,s");
+            break;
+        case LLD_GLOBAL:
+            out("SUBSP 4,i");
+            out("LDWA _g%d,d", ui.value);
+            out("STWA 0,s");
+            out("LDWA _g%d,d", ui.value + 1);
+            out("STWA 2,s");
+            break;
+        case LLD_LOCAL:
+            // low word is slot n, high word is slot n+1 (the lower address)
+            out("SUBSP 4,i");
+            out("LDWA %d,x", -2 * (ui.value + 1));
+            out("STWA 0,s");
+            out("LDWA %d,x", -2 * ui.value);
+            out("STWA 2,s");
+            break;
+        case LLD_VARP:
+            // slot n holds the address of the high word
+            out("LDWA %d,x", -2 * ui.value);
+            out("SUBSP 4,i");
+            out("STWA 0,s");
+            out("LDWA 0,sf");
+            out("STWA -2,s");
+            out("LDWA 0,s");
+            out("ADDA 2,i");
+            out("STWA 0,s");
+            out("LDWA 0,sf");
+            out("STWA 2,s");
+            out("LDWA -2,s");
+            out("STWA 0,s");
+            break;
+        case LST_GLOBAL:
+            out("LDWA 0,s");
+            out("STWA _g%d,d", ui.value);
+            out("LDWA 2,s");
+            out("STWA _g%d,d", ui.value + 1);
+            out("ADDSP 4,i");
+            break;
+        case LST_LOCAL:
+            out("LDWA 0,s");
+            out("STWA %d,x", -2 * (ui.value + 1));
+            out("LDWA 2,s");
+            out("STWA %d,x", -2 * ui.value);
+            out("ADDSP 4,i");
+            break;
+        case LST_VARP:
+            out("LDWA %d,x", -2 * ui.value);
+            out("STWA -2,s");
+            out("LDWA 0,s");
+            out("STWA -2,sf");
+            out("LDWA -2,s");
+            out("ADDA 2,i");
+            out("STWA -2,s");
+            out("LDWA 2,s");
+            out("STWA -2,sf");
+            out("ADDSP 4,i");
+            break;
+        case CHECKIDX:
+            // the index stays on the stack when it is in range
+            usesRangeCheck = true;
+            out("LDWA 0,s");
+            out("BRLT _range,i");
+            out("CPWA %d,i", ui.value);
+            out("BRGE _range,i");
             break;
         case SETFP:
             out("MOVSPA");
@@ -374,8 +657,49 @@ public class Pep10 {
             out("STWA -2,s");
             out("LDWX -2,s");
             break;
-        default:
-            System.err.println("Unsupported instruction: " + ui);
+        }
+    }
+    
+    void translate(UnaryFloat uf) {
+        switch (uf.op) {
+        case FCONST:
+            out(".WORD %d", toF16(uf.value));
+            break;
+        case FLD_CONST:
+            out("LDWA %d,i", toF16(uf.value));
+            out("SUBSP 2,i");
+            out("STWA 0,s");
+            break;
+        }
+    }
+
+    private int toF16(double value) {
+        long bits = Double.doubleToLongBits(value);
+        int sign = (bits < 0) ? 0x8000 : 0;
+        long magnitude = bits & 0x7FFF_FFFF_FFFF_FFFFL;
+        int exponent = (int) (magnitude >> 52) - 1023;
+        long mantissa = magnitude & 0x000F_FFFF_FFFF_FFFFL;
+        
+        if (exponent == 1024) {
+            // Infinity or NaN
+            return sign | 0x7C00 | (int) (mantissa >> 42);
+        } else if (exponent == -1023) {
+            // Subnormal; treat as zero
+            return sign;
+        } else {
+            // Normal
+            if (exponent > 15) {
+                // treat large numbers as Infinity
+                return sign | 0x7C00;
+            } else if (exponent < -24) {
+                // treat very small numbers as zero
+                return sign;
+            } else if (exponent < -14) {
+                // treat somewhat small numbers as subnormal
+                return sign | (int) ((mantissa | 0x0010_0000_0000_0000L) >> (42 + (-14 - exponent)));
+            } else {
+                return sign | ((exponent + 15) << 10) | (int) (mantissa >> 42);
+            }
         }
     }
 
@@ -390,10 +714,13 @@ public class Pep10 {
             out("BRNE %s,i", us.value);
             break;
         case CALL:
+            if (us.value.equals("WriteLong")) {
+                usesPrintLong = true;
+            } else if (us.value.equals("ReadLong")) {
+                usesReadLong = true;
+            }
             out("CALL %s,i", us.value);
             break;
-        default:
-            System.err.println("Unsupported instruction: " + us);
         }
     }
 
@@ -406,6 +733,13 @@ public class Pep10 {
             out("BREQ %s,i", bs.left);
             out("BR %s,i", bs.right);
             break;
+        case BRFEQ:
+            out("CALL FEq,i");
+            out("LDWA 2,s");
+            out("ADDSP 4,i");
+            out("BRNE %s,i", bs.left);
+            out("BR %s,i", bs.right);
+            break;
         case BRILT:
             out("LDWA 2,s");
             out("CPWA 0,s");
@@ -413,8 +747,33 @@ public class Pep10 {
             out("BRLT %s,i", bs.left);
             out("BR %s,i", bs.right);
             break;
-        default:
-            System.err.println("Unsupported instruction: " + bs);
+        case BRFLT:
+            out("CALL FLt,i");
+            out("LDWA 2,s");
+            out("ADDSP 4,i");
+            out("BRNE %s,i", bs.left);
+            out("BR %s,i", bs.right);
+            break;
+        case BRLEQL: {
+            String yes = newLabel();
+            String no = newLabel();
+            emitLongEqual(yes, no);
+            out("%s: ADDSP 8,i", yes);
+            out("BR %s,i", bs.left);
+            out("%s: ADDSP 8,i", no);
+            out("BR %s,i", bs.right);
+            break;
+        }
+        case BRLLT: {
+            String yes = newLabel();
+            String no = newLabel();
+            emitLongLess(yes, no);
+            out("%s: ADDSP 8,i", yes);
+            out("BR %s,i", bs.left);
+            out("%s: ADDSP 8,i", no);
+            out("BR %s,i", bs.right);
+            break;
+        }
         }
     }
 }

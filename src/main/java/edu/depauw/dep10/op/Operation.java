@@ -13,7 +13,7 @@ public sealed interface Operation extends TableEntry {
     
     public static final Operation UNIMPLEMENTED = new Unary("UNIMP") {
         public void exec(State state) {
-            throw new IllegalStateException("Unimplemented operation");
+            state.invalidInstruction();
         }       
     };
     
@@ -30,7 +30,9 @@ public sealed interface Operation extends TableEntry {
         
         public void perform(State s, Word origPC, Controller control) {
             s.setOp(this);
-            control.perform(this, s, origPC);
+            if (control.perform(this, s, origPC)) {
+                s.instructionDone();
+            }
         }
         
         @Override
@@ -58,7 +60,7 @@ public sealed interface Operation extends TableEntry {
 
         public void exec(State s) {
             var pc = s.getPC();
-            var operand = s.mem2(pc);
+            var operand = s.fetch2(pc); // operand specifier: an instruction fetch
             s.setEA(pc); // effective address in case of immediate mode
             s.setPC(pc.plus(2));
             s.setOperand(operand);
@@ -67,7 +69,9 @@ public sealed interface Operation extends TableEntry {
         
         public void perform(State s, Word origPC, Controller control) {
             s.setOp(this);
-            control.perform(this, s, origPC);
+            if (control.perform(this, s, origPC)) {
+                s.instructionDone();
+            }
         }
         
        @Override
